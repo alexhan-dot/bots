@@ -8,7 +8,7 @@
 주간 탭을 따로 만들지 않고, 새 주 첫 작업 때 직전 주 행(시간·사냥터)을 복사해 이어 붙임.
 기존 수기 시트(TargetWeekNN)는 더 이상 읽거나 쓰지 않음.
 """
-import os, csv, datetime, functools
+import os, re, csv, datetime, functools
 import gspread
 from google.auth import default
 from services import clock
@@ -248,7 +248,8 @@ class Schedule:
             return 0
         src = week_start(datetime.date.fromisoformat(max(past)))
         shift = sunday - src
-        accounts = {r["Account"]: r for r in load_master() if r.get("Status") == "Active"}
+        accounts = {r["Account"]: r for r in load_master() if r.get("Status") == "Active"
+                    and not ((_until(r) or datetime.date.max) < sunday)}      # 기간 끝난 계정 제외
         n = 0
         for _, r in sorted(self.week(src), key=lambda x: (x[1]["Date"], x[1]["Account"], x[1]["Slot"])):
             if r["Account"] not in accounts:
@@ -343,14 +344,54 @@ def _apply_new(s: Schedule, op) -> str:
     sched = op.get("schedule", {})             # {MON: [{"time":...}] | "OFF"}
     per_day = {d: ([x["time"] for x in v] if isinstance(v, list) else []) for d, v in sched.items()}
     n_slots = max((len(v) for v in per_day.values()), default=1) or 1
-    this = week_start(_today()); nxt = this + datetime.timedelta(days=7)
-    s.ensure_week(this); s.ensure_week(nxt)
-    # 이번 주는 오늘부터, 다음 주는 전체 (이후 주는 자동 생성이 다음 주를 복사)
-    days = [this + datetime.timedelta(days=i) for i in range(14)]
-    for d in days:
-        if d < _today(): continue
+    # 기간: "내일부터 일주일간" → start/end. 없으면 오늘부터 이번 주 + 다음 주 (이후 주는 자동 생성이 복사)
+    lo = _parse_day(op.get("start_date")) or _today()
+    hi = _parse_day(op.get("end_date")) or (week_start(_today()) + datetime.timedelta(days=13))
+    lo = max(lo, _today())
+    hi = min(hi, lo + datetime.timedelta(days=61))
+    if op.get("end_date"):                      # 기간 한정 → 끝난 뒤 주에는 자동 복사하지 않음
+        _set_until(ch, hi)
+    ground = op.get("ground") or ""
+    d = lo
+    while d <= hi:
+        s.ensure_week(week_start(d))
         s.set_day_times(ch, type_, d, per_day.get(OP_DAYS[d.weekday()], []), n_slots)
-    return f"{ch} [{type_}] 신규 등록 — 슬롯 {n_slots}개, {this}~{nxt + datetime.timedelta(days=6)} 반영"
+        if ground:
+            for n, r in s.on(ch, d):
+                if r["Time"] != "OFF" and r.get("Hunting Ground") != ground:
+                    s.set(n, r, **{"Hunting Ground": ground})
+        d += datetime.timedelta(days=1)
+    extra = f", 사냥터 {ground}" if ground else ""
+    return f"{ch} [{type_}] 신규 등록 — 슬롯 {n_slots}개, {lo}~{hi} 반영{extra}"
+
+
+def _parse_day(v) -> datetime.date | None:
+    try:
+        return datetime.date.fromisoformat(str(v)[:10]) if v else None
+    except ValueError:
+        return None
+
+
+UNTIL_RE = re.compile(r"Until:\s*(\d{4}-\d{2}-\d{2})")
+
+
+def _set_until(name: str, until: datetime.date):
+    """Accounts Notes 에 'Until: YYYY-MM-DD' — 그 뒤 주는 ensure_week 가 복사하지 않음"""
+    r = master_row(name)
+    if not r:
+        return
+    notes = UNTIL_RE.sub("", str(r.get("Notes", ""))).strip(" ;")
+    notes = (notes + "; " if notes else "") + f"Until: {until.isoformat()}"
+    ws = _book().worksheet(ACCOUNTS_TAB)
+    cell = ws.find(name, in_column=1)
+    if cell:
+        ws.update_cell(cell.row, ACCOUNT_COLS.index("Notes") + 1, notes)
+        load_master(force=True)
+
+
+def _until(r: dict) -> datetime.date | None:
+    m = UNTIL_RE.search(str(r.get("Notes", "")))
+    return _parse_day(m[1]) if m else None
 
 def _apply_stop(s: Schedule, op) -> str:
     ch = op["character"]; changed = []

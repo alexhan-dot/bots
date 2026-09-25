@@ -27,3 +27,27 @@
 법사,마법사|위자드,마법사,Wizard (class),class,Y
 GY,그야|그레이브야드|새벽,24:00-08:00 시프트,graveyard shift (24:00-08:00),schedule,Y
 지피방,,(확인 필요),(unknown — verify),unknown,N
+말섬,말하는섬|말하는 섬,말하는 섬,Talking Island,hunting_ground,Y
+말던,말섬던전|말하는섬 던전,말하는 섬 던전,Talking Island Dungeon,hunting_ground,N
+본던,본토던전|본토 던전,본토 던전,Mainland Dungeon,hunting_ground,N
+기감,기란감옥|기란 감옥,기란 감옥,Giran Prison,hunting_ground,Y
+용계,용의계곡|용의 계곡,용의 계곡,Dragon Valley,hunting_ground,Y
+오만,오만의탑|오만의 탑|오탑,오만의 탑,Tower of Insolence,hunting_ground,Y
+요숲,요정숲|요정 숲,요정 숲,Elven Forest,hunting_ground,N
+화둥,화룡의둥지|화룡의 둥지,화룡의 둥지,Fire Dragon's Nest,hunting_ground,N
+글루딘,글말|글루딘 마을,글루딘,Gludin,town,N
+기란,기란 마을,기란,Giran,town,Y
+아데나,아덴|돈,아데나,Adena (gold),item,Y
+템,아이템,아이템,item,item,Y
+득템,드랍|드롭,아이템 획득,loot drop,item,Y
+물약,빨물|포션,물약,potion,item,Y
+렙업,레벨업|업,레벨 업,level up,stat,Y
+풀피,,체력 가득,full HP,stat,Y
+피케이,PK|막피,플레이어 킬,PK (player kill),status,Y
+부캐,부캐릭,부 캐릭터,alt character,people,Y
+본캐,본캐릭,주 캐릭터,main character,people,Y
+쩔,쩔해주다|쩔받다,파워레벨링,power-leveling (carry),action,N
+파티,팟,파티 사냥,party,action,Y
+오후,,오후(PM),PM — 오후 8시 = 20:00,schedule,Y
+새벽,,새벽(AM),early morning — 새벽 4시 = 04:00 (next day if after a PM start),schedule,Y
+자정,밤12시|밤 12시,자정,midnight = 24:00,schedule,Y

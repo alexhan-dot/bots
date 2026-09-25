@@ -43,12 +43,19 @@ def add(term: str, korean_full: str, english: str, category: str = "unknown",
     load(force=True)
 
 def ensure_tab():
-    """Glossary 탭이 없으면 CSV로 생성"""
+    """Glossary 탭이 없으면 CSV로 생성, 있으면 CSV에만 있는 용어를 뒤에 추가 (시트에서 고친 내용은 유지)"""
     book = sheets._book()
+    with open(os.path.join(os.path.dirname(__file__), "..", "data", "glossary.csv"),
+              encoding="utf-8-sig") as f:
+        rows = list(csv.reader(f))
     try:
-        book.worksheet(TAB); return
+        ws = book.worksheet(TAB)
     except Exception:
         ws = book.add_worksheet(TAB, rows=300, cols=6)
-        with open(os.path.join(os.path.dirname(__file__), "..", "data", "glossary.csv"),
-                  encoding="utf-8-sig") as f:
-            ws.update(values=list(csv.reader(f)), range_name="A1")
+        ws.update(values=rows, range_name="A1")
+        return
+    have = {r[0].strip() for r in ws.get("A1:A") if r}
+    new = [r for r in rows[1:] if r and r[0].strip() not in have]
+    if new:
+        ws.append_rows(new, table_range="A1")
+        load(force=True)

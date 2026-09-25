@@ -121,6 +121,7 @@ Board/Payroll A열 목록은 봇 첫 기동(ensure_tabs) 때 동적 수식으로
 
 ### 4-1. 텔레그램 봇 (새로)
 1. 텔레그램 **@BotFather** → `/newbot` → 표시 이름(예: Lineage Schedule) → 유저네임(`..._bot` 으로 끝) → 토큰 → `TELEGRAM_BOT_TOKEN`
+   - 운영 봇: **@lineage_schedule_bot** (표시 이름: Lineage 스케줄)
 2. BotFather `/setprivacy` → 봇 선택 → **Disable** (단체방에서도 메시지 읽기)
 3. `TELEGRAM_WEBHOOK_SECRET` = `openssl rand -hex 16` 결과
 4. 대표가 **새 봇에게 `/start`** → 답장에 나오는 Chat ID → `ADMIN_CHAT_ID` *(배포 후에 가능 — 배포 전이면 @userinfobot 으로 확인)*
