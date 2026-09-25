@@ -7,10 +7,11 @@ Flows:
      → 대표 컨펌 → 트레이너 채널 발송
 """
 import os, re, json, logging
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request, Response, BackgroundTasks
 
 from services import telegram as tg
-from services import parser, matcher, translate, sheets, notify, media, state, glossary
+from services import parser, matcher, translate, sheets, notify, media, state, glossary, clock
+from services import discord_bot, index
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("bot")
@@ -26,8 +27,24 @@ WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")  # 설정 시 텔
 def _init():
     try: sheets.ensure_tabs()
     except Exception as e: log.warning("sheet tab init skipped: %s", e)
+    if discord_bot.PUBLIC_KEY:
+        index.warm()                                   # 디스코드 첫 요청이 시트를 기다리지 않도록
     try: glossary.ensure_tab()
     except Exception as e: log.warning("glossary tab init skipped: %s", e)
+
+@app.post("/discord/interactions")
+async def discord_interactions(req: Request, bg: BackgroundTasks):
+    """디스코드 매니저 봇 (영어). 3초 안에 응답해야 함 — 조회는 메모리, 저장·AI는 bg"""
+    raw = await req.body()
+    if not discord_bot.verify(raw, req.headers.get("X-Signature-Ed25519", ""),
+                              req.headers.get("X-Signature-Timestamp", "")):
+        return Response(status_code=401, content="invalid request signature")
+    try:
+        return await discord_bot.handle(json.loads(raw), bg)
+    except Exception as e:
+        log.exception("discord interaction failed")
+        return {"type": 4, "data": {"content": f"❌ Error: {type(e).__name__}", "flags": 64}}
+
 
 @app.get("/healthz")
 def healthz():
@@ -108,8 +125,7 @@ async def handle_update(update: dict):
 # Flow A: 스케줄 요청 처리
 # ─────────────────────────────────────────────
 async def start_schedule_flow(sales_chat_id: str, text_kr: str):
-    import datetime
-    res = await parser.parse(text_kr, message_time=datetime.datetime.now().isoformat(timespec="minutes"))
+    res = await parser.parse(text_kr, message_time=clock.stamp())
 
     # 미확인 용어 → 학습 요청 (처리는 계속 진행)
     if res.get("unknown_terms"):

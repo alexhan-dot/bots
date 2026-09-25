@@ -12,7 +12,7 @@
 - 런타임: Python 3.12 / FastAPI / Cloud Run (기존 GCP 프로젝트 재사용)
 - 상태 저장: Firestore (Native)
 - AI: Anthropic API (`claude-sonnet-4-6`), 이미지=Vision, 음성=Google Speech-to-Text
-- **현재 채널: 텔레그램(수신·컨펌) + 디스코드(알림·매니저 컨펌)만 사용.**
+- **현재 채널: 텔레그램(영업자, 한글) + 디스코드(알림 웹훅 + 매니저 봇, 영어: OT·인센티브·페널티·스케줄 기록).**
   카카오 상담톡(TalkBridge)은 코드에 있으나 한국 사업자 인증 문제로 **보류** — `TALKBRIDGE_*` 환경변수 비워둠. WhatsApp은 **제거됨**.
 
 ### 파일 구조
@@ -30,6 +30,11 @@ services/notify.py      디스코드 웹훅
 services/media.py       이미지/음성 → 텍스트 (ffmpeg 변환 포함)
 services/state.py       Firestore pending 상태
 services/kakao.py       TalkBridge 어댑터 (보류)
+services/discord_bot.py 디스코드 매니저 봇 (Interactions, 영어)
+services/manager.py     매니저 기록 로직 (스케줄 매칭·미리보기·저장)
+services/index.py       메모리 인덱스 (빠른 조회·자동완성)
+services/ai_parse.py    /log 자유 입력 → 양식 (Claude API)
+services/clock.py       로컬 시간대 today/now
 data/accounts_seed.csv      Accounts 시드 (63계정, Type 포함)
 data/schedule_seed.csv      Schedule 시드 (Week 39 이관 + Week 40)
 data/character_master.csv   (구) 캐릭터 마스터 — 이관 입력용
@@ -97,13 +102,14 @@ gcloud firestore databases describe --database="(default)" 2>/dev/null || \
 
 ---
 
-## 3. Phase 3 — 시트 확인 (사용자)
+## 3. Phase 3 — 시트 적용 (사용자)
 
-새 시트 `Lineage Schedule v2`는 이미 만들어져 있음 (탭 준비 불필요).
-1. `Accounts` 탭에서 README 탭 하단 "⚠️ 확인 필요" 6개 계정(Kangaroo, Kyoryu, Pele, Sarim, Sudden, Taejo)의 Type(Client/Farming) 확정
-2. Class 빈 칸 채우기, Customer(고객명)·SalesRep(담당 영업) 입력 (선택)
+1. `sheet/Lineage_Schedule_v2.xlsx` 를 `Lineage Schedule v2` 시트에서 *파일 → 가져오기 → 업로드 → "스프레드시트 바꾸기"* (시트 ID 유지)
+   → Schedule(Week 39·40), TL 근무표(Week 16~39), Payroll History, Overtime, Death Penalty, Performance Pay 포함
+2. `Accounts` 탭에서 README 탭 하단 "⚠️ 확인 필요" 6개 계정(Kangaroo, Kyoryu, Pele, Sarim, Sudden, Taejo)의 Type 확정
+3. (선택) Class 빈 칸, Customer, SalesRep 입력
 
-**검증**: 배포 후 봇 첫 기동 시 Schedule 탭이 채워지고 Client/Farming Board에 이번 주가 표시되는지 확인
+**검증**: Client/Farming/TL Board에 이번 주가 보이고 Payroll 탭에 플레이어별 시간이 집계되는지
 
 ## 4. Phase 4 — 외부 키 수집 (사용자에게 하나씩 요청)
 
@@ -117,6 +123,9 @@ gcloud firestore databases describe --database="(default)" 2>/dev/null || \
 | `SALES_CHAT_IDS` | 영업자 각자 @userinfobot → 쉼표로 나열 (없으면 일단 ADMIN과 동일하게) |
 | `DISCORD_WEBHOOK_URL` | 디스코드 채널 설정 > 연동 > 웹훅 > 새 웹훅 > URL 복사 |
 | `BOT_BASE_URL` | Phase 5 첫 배포 후 채움 |
+| `BOT_TZ` | "오늘" 기준 시간대 (기본 Asia/Seoul) — 사용자에게 확인 |
+| `DISCORD_APP_ID`, `DISCORD_PUBLIC_KEY` | README "디스코드 매니저 봇 > 설정" 1~3 |
+| `DISCORD_MANAGER_ROLE_IDS` | 디스코드 서버 설정 > 역할 > 매니저 역할 우클릭 > ID 복사 (개발자 모드 필요) |
 | `TALKBRIDGE_*` | **비워둠 (보류)** |
 
 대표와 영업자 모두 봇에게 `/start` 한 번 눌러두도록 안내.
@@ -134,6 +143,7 @@ bash deploy.sh            # REGION 환경변수로 리전 변경 가능: REGION=
 - 출력된 서비스 URL을 `env.yaml`의 `BOT_BASE_URL`에 기록 → `bash deploy.sh` 한 번 더
 - `curl $URL/healthz` → `{"ok":true}` 확인
 - `curl "https://api.telegram.org/bot$TOKEN/getWebhookInfo"` → url이 `$URL/telegram/webhook`인지 확인
+- 디스코드 Developer Portal에 Interactions Endpoint URL `$URL/discord/interactions` 저장 (성공해야 저장됨) → `tools/register_discord_commands.py` 실행
 
 **완료 기준**: healthz OK, 텔레그램 웹훅 등록 확인.
 
@@ -152,7 +162,11 @@ bash deploy.sh            # REGION 환경변수로 리전 변경 가능: REGION=
 7. 영업자 → 봇: `24. 수 9월 23일 : 10:00 ~ 18:00 (8시간) -> 삭제\n추가 목 9월 24일 : 24:00 ~ 08:00(8시간)` → "어느 캐릭터 건인가요?" 버튼 → 선택 → 시트 반영
 8. 영업자 → 봇: `매니저님 버땅보다 버땅심연이 경치 더 주나요?` → QUESTION 분류 → 디스코드 답변 요청 링크 → 링크 뒤 `&text=Abyss gives more EXP` 붙여 열기 → 영업자에게 한글 답변 도착
 
-**완료 기준**: 8개 모두 통과. 실패한 항목은 로그 기반으로 코드 수정 후 재배포·재테스트.
+9. 매니저(디스코드) → `/schedule account:Alex` → 오늘 시프트 즉시 표시
+10. 매니저 → `/ot staff:<오늘 근무자> hours:1 reason:test` → 매칭된 시프트 미리보기 → Confirm → Overtime 탭에 행 + 채널 로그 → 확인 후 행 삭제
+11. 매니저 → `/log <근무자> 1h OT today test` → 같은 미리보기가 뜨는지 (AI) → Cancel
+
+**완료 기준**: 11개 모두 통과. 실패한 항목은 로그 기반으로 코드 수정 후 재배포·재테스트.
 
 ---
 

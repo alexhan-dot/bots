@@ -25,7 +25,17 @@
 | `Client Board` / `Farming Board` | 고객 / 농장 계정 주간 그리드 (셀 = 시간⏎플레이어⏎@사냥터). B2에 일요일 날짜 넣으면 다른 주 조회 | 보기 전용 (수식) |
 | `Schedule` | 원장. 1행 = 계정 × 날짜 × 시프트(Slot). A:O 입력, P:S(Hours/Week/Key/Display) 자동 계산 | 사람 + 봇 |
 | `Accounts` | 계정 마스터. **Type = Client(고객) / Farming(농장)**, Status = Active/Paused/Inactive, Customer, SalesRep | 사람 + 봇 |
+| `TL Board` / `TL Schedule` | 팀 리더 근무표 (주간 보기 / 입력: 근무시간·출근). Week 16~39 이관 | 사람 (+ `/week` 복사) |
+| `Payroll` | 선택한 주의 플레이어별 총 시간·시프트 수·담당 캐릭터 — Schedule에서 자동 집계 | 보기 전용 (수식) |
+| `Payroll History` | 기존 수기 Payroll (W19·20·33·34) | 기록 |
+| `Overtime` | OT 로그 (직원·계정·시프트·OT 시간·사유·매니저). TL OT 이관분 포함 | 디스코드 봇 + 사람 |
+| `Incentives` | 인센티브 로그 | 디스코드 봇 + 사람 |
+| `Death Penalty` | 데스 페널티 로그 (7개 탭 → 1개로 통합, 중복 제거) | 디스코드 봇 + 사람 |
+| `Performance Pay` | 인센티브 기준표 (원본 그대로) | 사람 |
 | `Glossary` / `EventLog` | 용어 사전 / 봇 기록 | |
+
+**적용 방법**: `sheet/Lineage_Schedule_v2.xlsx` 를 새 시트에서 *파일 → 가져오기 → 업로드 → "스프레드시트 바꾸기"* (시트 ID 유지).
+봇 기동 시 계산 수식(Board·Payroll·Week 열)을 열린 범위로 다시 쓰고, 빠진 기록 탭은 헤더만 만들어 둠.
 
 - 주간 탭을 매주 새로 만들지 않음. 새 주 첫 작업(또는 `/week` 명령) 때 직전 주의 **시간·사냥터를 복사**, 플레이어·실적은 비움 (Active 계정만)
 - 고객↔농장 이동 = `Accounts`의 Type 변경 (다음 주 생성분부터 반영)
@@ -59,6 +69,36 @@
 요금: Free(30일 3건) → Pro 100 월 ₩16,500(VAT포함, 100건) → Pro 300 ₩49,500. **하루에 응대한 고객 1명 = 1건**(메시지 수 아님)이라 영업자 몇 명 규모면 Pro 100으로 충분. 초과해도 후청구 없이 신규 상담만 멈춤.
 
 주의: 상담톡 정식 사용 시 카카오톡 채널 관리자센터의 기존 1:1 채팅 메뉴는 비활성화됨(채팅 이력 조회 불가). 봇 웹훅이 응답 못 하면 TalkBridge가 재시도하므로 Cloud Run 최소 인스턴스 0으로 둬도 유실 없음.
+
+## 디스코드 매니저 봇 (영어)
+시간대별 매니저가 직원 스케줄·OT·인센티브·페널티를 디스코드에서 양식으로 기록 → 봇이 스케줄을 찾아 보여줌 → **Confirm** 누르면 시트에 기록 + 채널에 공개 로그.
+
+| 명령 | 기록 위치 | 예 |
+|---|---|---|
+| `/ot staff hours [date] [time] [account] [reason]` | Overtime | `/ot staff:Reno hours:2 date:yesterday reason:boss` |
+| `/incentive staff amount [date] [account] [kpi] [level] [reason]` | Incentives | |
+| `/penalty staff hours [date] [account] [action] [ir]` | Death Penalty (Shift 자동: Morning/Mid/Graveyard) | |
+| `/assign account player [date] [slot] [time]` | Schedule Player | |
+| `/off account [date] [slot] [time]` | Schedule Time=OFF (슬롯 없으면 그날 전체) | |
+| `/extend account new_time [date] [time] [slot]` | Schedule Time | |
+| `/schedule [account] [staff] [date]` | 조회만 | |
+| `/log text` | 자유 입력 → AI가 양식으로 변환 → 같은 확인 단계 | `/log Reno 2h OT on Jjuni last night` |
+| `/week` | 다음 주 Schedule + TL 근무표 생성 | |
+
+**속도 설계** — 디스코드는 3초 안에 응답해야 하고, 매니저가 기다리지 않아야 함:
+- 스케줄 찾기는 AI가 아니라 **메모리 인덱스** (Accounts·Schedule 최근 3주~향후 2주·TL). 조회/자동완성 1ms 미만, 60초마다 백그라운드 갱신
+- 이름·계정은 **자동완성**(입력하면서 후보 표시) + 별칭/유사도 매칭 → 오타에도 바로 찾음
+- 시트 쓰기는 Confirm 즉시 "Saving…" 응답 후 백그라운드 (`--no-cpu-throttling`), 쓰기 전 행 재확인(누가 정렬해도 엉뚱한 행에 안 씀)
+- AI는 `/log` 자유 입력에만 사용 (Claude API, effort low, JSON 스키마 고정 출력). 이름 매칭은 인덱스가 하므로 프롬프트가 짧음
+- `--min-instances 1` 로 콜드 스타트 없음
+
+**설정** (1회)
+1. https://discord.com/developers/applications → New Application → *Bot* 탭에서 토큰 발급 (명령 등록용)
+2. *General Information* 의 Application ID, Public Key → `env.yaml` 의 `DISCORD_APP_ID`, `DISCORD_PUBLIC_KEY`
+3. *OAuth2 → URL Generator*: scope `applications.commands` + `bot` 체크 → 생성된 URL로 서버에 초대
+4. 배포 후 *Interactions Endpoint URL* = `https://<서비스URL>/discord/interactions` 저장 (디스코드가 서명 검증 테스트함)
+5. 명령 등록: `DISCORD_APP_ID=… DISCORD_BOT_TOKEN=… DISCORD_GUILD_ID=<서버 ID> python tools/register_discord_commands.py`
+6. (권장) 매니저 역할 ID를 `DISCORD_MANAGER_ROLE_IDS` 에 넣어 매니저만 사용
 
 ## 매니저 컨펌 경로
 - 디스코드 알림의 confirm 링크 클릭 → 봇이 텔레그램으로 영업자에게 확정 회신

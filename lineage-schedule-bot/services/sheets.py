@@ -11,8 +11,11 @@
 import os, csv, datetime, functools
 import gspread
 from google.auth import default
+from services import clock
 from services.layout import (SCHEDULE_TAB, ACCOUNTS_TAB, SCHEDULE_COLS, METRIC_COLS, ACCOUNT_COLS,
-                             DAYS, BOARDS, schedule_formulas, board_formulas)
+                             DAYS, BOARDS, schedule_formulas, board_formulas,
+                             TL_TAB, TL_BOARD, TL_COLS, tl_formulas, tl_board_formulas,
+                             PAYROLL_TAB, payroll_formulas, LOG_TABS, week_formula)
 
 SHEET_ID = os.environ["SHEET_ID"]
 DATA = os.path.join(os.path.dirname(__file__), "..", "data")
@@ -28,13 +31,13 @@ def _book():
     return _client().open_by_key(SHEET_ID)
 
 def _today() -> datetime.date:
-    return datetime.date.today()
+    return clock.today()
 
 def week_start(d: datetime.date) -> datetime.date:
     return d - datetime.timedelta(days=(d.weekday() + 1) % 7)       # 일요일
 
 def _now() -> str:
-    return datetime.datetime.now().isoformat(timespec="minutes")
+    return clock.stamp()
 
 # ── 탭 초기화 ────────────────────────────────
 def ensure_tabs():
@@ -58,15 +61,54 @@ def ensure_tabs():
                     value_input_option="USER_ENTERED")
     for title, type_ in BOARDS.items():
         if title in titles:
-            book.worksheet(title).batch_update(
-                [{"range": ref, "values": [[f]]} for ref, f in board_formulas(type_).items()],
-                value_input_option="USER_ENTERED")
+            _write_formulas(book.worksheet(title), board_formulas(type_))
+    # 매니저 기록 탭(Overtime/Incentives/Death Penalty)은 없으면 헤더만 만들어 둠 (디스코드 봇이 append)
+    for title, cols in LOG_TABS.items():
+        if title not in titles:
+            book.add_worksheet(title, rows=1000, cols=len(cols) + 1).update(
+                values=[cols + ["Week"]], range_name="A1")
+        _write_formulas(book.worksheet(title), {f"{chr(65 + len(cols))}2": week_formula()})
+    if TL_TAB in titles:
+        _write_formulas(book.worksheet(TL_TAB), {f"{c}2": f for c, (_, f) in tl_formulas().items()})
+    if TL_BOARD in titles:
+        _write_formulas(book.worksheet(TL_BOARD), tl_board_formulas())
+    if PAYROLL_TAB in titles:
+        _write_formulas(book.worksheet(PAYROLL_TAB), payroll_formulas())
     ws = book.worksheet(SCHEDULE_TAB)
     if not ws.acell("A2").value:
         with open(os.path.join(DATA, "schedule_seed.csv"), encoding="utf-8") as f:
             rows = [_typed(r) for r in list(csv.reader(f))[1:]]
         if rows: ws.append_rows(rows, table_range="A1:O1")
     load_master(force=True)
+
+def _write_formulas(ws, cells: dict):
+    ws.batch_update([{"range": ref, "values": [[f]]} for ref, f in cells.items()],
+                    value_input_option="USER_ENTERED")
+
+def append_log(tab: str, row: dict) -> int:
+    """Overtime/Incentives/Death Penalty 탭에 한 줄 추가. 반환: 행 번호(알 수 없으면 0)"""
+    cols = LOG_TABS[tab]
+    row = {**row, "Logged At": _now()}
+    row = {k: ("" if v is None else v) for k, v in row.items()}
+    res = _book().worksheet(tab).append_row([row.get(c, "") for c in cols], table_range="A1")
+    try:
+        return int(res["updates"]["updatedRange"].split("!")[1].lstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ").split(":")[0])
+    except Exception:
+        return 0
+
+def update_shift_row(rownum: int, date: str, account: str, slot: int, **fields) -> bool:
+    """Schedule 한 행 수정 (디스코드 매니저용). 행이 여전히 같은 시프트인지 확인 후 씀 — 누가 정렬했으면 False"""
+    ws = _book().worksheet(SCHEDULE_TAB)
+    cur = ws.row_values(rownum)
+    cur = cur + [""] * (len(SCHEDULE_COLS) - len(cur))
+    try: cur_slot = int(cur[COL["Slot"]])
+    except (TypeError, ValueError): cur_slot = None
+    if _norm_date(cur[COL["Date"]]) != date or cur[COL["Account"]] != account or cur_slot != slot:
+        return False
+    data = [{"range": f"{chr(65 + COL[k])}{rownum}", "values": [[v]]} for k, v in fields.items()]
+    data.append({"range": f"{chr(65 + COL['Updated'])}{rownum}", "values": [[_now()]]})
+    ws.batch_update(data)
+    return True
 
 def _typed(r: list) -> list:
     """CSV 문자열 → Slot은 정수, KPI/Gold 숫자면 숫자"""
@@ -219,11 +261,36 @@ def apply(op: dict) -> str:
     return result
 
 def rollover(sunday: datetime.date | None = None) -> int:
-    """다음 주(기본) 행 미리 생성 — /week 명령·스케줄러용"""
+    """다음 주(기본) 행 미리 생성 — /week 명령·스케줄러용. Schedule + TL 근무표(근무시간만 복사)"""
+    sunday = sunday or week_start(_today()) + datetime.timedelta(days=7)
     s = Schedule()
-    n = s.ensure_week(sunday or week_start(_today()) + datetime.timedelta(days=7))
+    n = s.ensure_week(sunday)
     s.flush()
-    return n
+    return n + _rollover_tl(sunday)
+
+def _rollover_tl(sunday: datetime.date) -> int:
+    try:
+        ws = _book().worksheet(TL_TAB)
+    except gspread.WorksheetNotFound:
+        return 0
+    vals = [r for r in ws.get(f"A2:{chr(64 + len(TL_COLS))}") if r and r[0]]
+    lo = sunday.isoformat()
+    if any(r[0] >= lo and r[0] <= (sunday + datetime.timedelta(days=6)).isoformat() for r in vals):
+        return 0
+    past = [r[0] for r in vals if r[0] < lo]
+    if not past:
+        return 0
+    src = week_start(datetime.date.fromisoformat(max(past)))
+    shift = sunday - src
+    new = []
+    for r in vals:
+        d = datetime.date.fromisoformat(r[0])
+        if src <= d < src + datetime.timedelta(days=7):
+            r = list(r) + [""] * (len(TL_COLS) - len(r))
+            new.append([(d + shift).isoformat(), r[1], r[2], r[3], "", ""])
+    if new:
+        ws.append_rows(new, table_range="A1")
+    return len(new)
 
 def _apply_new(s: Schedule, op) -> str:
     ch = op.get("character") or op["character_raw"]

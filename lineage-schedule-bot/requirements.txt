@@ -5,3 +5,6 @@ gspread==6.*
 google-auth==2.*
 google-cloud-firestore==2.*
 google-cloud-speech==2.*
+anthropic>=1.8,<2
+pynacl==1.5.*
+tzdata

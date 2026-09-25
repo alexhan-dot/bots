@@ -18,7 +18,11 @@ from openpyxl.worksheet.datavalidation import DataValidation
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "..", "data")
 sys.path.insert(0, os.path.join(HERE, ".."))
-from services.layout import SCHEDULE_COLS, ACCOUNT_COLS, DAYS, schedule_formulas, board_formulas  # noqa: E402
+from services.layout import (SCHEDULE_COLS, ACCOUNT_COLS, DAYS, schedule_formulas, board_formulas,  # noqa: E402
+                             TL_TAB, TL_BOARD, TL_COLS, tl_formulas, tl_board_formulas,
+                             PAYROLL_TAB, PAYROLL_HISTORY_TAB, payroll_formulas, week_formula,
+                             OVERTIME_TAB, OVERTIME_COLS, INCENTIVE_TAB, INCENTIVE_COLS,
+                             PENALTY_TAB, PENALTY_COLS, PERF_PAY_TAB)
 XLSX_LAST_ROW = 50000   # xlsx 가져오기용 범위 제한 (봇이 기동 시 열린 범위로 다시 씀)
 
 # 시트 블록 헤더 → (정식명, 클래스). 원본 표기는 별칭으로 보존
@@ -101,6 +105,86 @@ def parse_week(ws, date_cols_client=range(3, 10), date_cols_farm=range(13, 20)):
     return accounts, rows, dates
 
 
+DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+
+
+def _hours(v):
+    """'4HOURS' / '1 Hour' / '3 hours' / 1.0 → 숫자. 못 읽으면 None"""
+    if isinstance(v, (int, float)): return v
+    m = re.search(r"\d+(\.\d+)?", str(v or ""))
+    return float(m[0]) if m and "-" != str(v).strip() else None
+
+
+def parse_tl(wb) -> tuple[list[dict], list[dict]]:
+    """모든 TargetWeekNN 탭의 'Team Leader Schedule' 구역(AE~) → (TL Schedule 행, Overtime 행)"""
+    out, ots = [], []
+    for ws in wb.worksheets:
+        if not ws.title.startswith("TargetWeek") or not str(ws.cell(5, 31).value or "").startswith("Team Leader"):
+            continue
+        days = [c for c in range(32, ws.max_column + 1) if str(ws.cell(5, c).value or "").strip() in DAY_NAMES]
+        has_ot = str(ws.cell(5, days[0] + 2).value or "").upper().startswith("FOR OT")
+        r = 6
+        while ws.cell(r, 31).value not in (None, ""):
+            leader = str(ws.cell(r, 31).value).strip()
+            for j, c in enumerate(days):
+                d = ws.cell(4, c).value
+                d = d.date() if isinstance(d, datetime.datetime) else datetime.date.fromisoformat(str(d)[:10])
+                row = {"Date": d.isoformat(), "Day": DAYS[j], "Leader": leader,
+                       "Shift": cell_str(ws.cell(r, c).value), "Attendance": cell_str(ws.cell(r, c + 1).value)}
+                if has_ot:
+                    ot, hrs = cell_str(ws.cell(r, c + 2).value), ws.cell(r, c + 3).value
+                    if ot not in ("", "-") or _hours(hrs):
+                        ots.append({"Date": row["Date"], "Staff": leader, "Role": "TL",
+                                    "Scheduled Time": row["Shift"], "OT Time": ot if ot != "-" else "",
+                                    "OT Hours": _hours(hrs), "Reason": "" if _hours(hrs) else cell_str(hrs),
+                                    "Source": f"migrated:{ws.title}"})
+                if any(row.get(k) not in ("", None, "-") for k in ("Shift", "Attendance")):
+                    out.append(row)
+            r += 1
+    out.sort(key=lambda x: (x["Date"], x["Leader"]))
+    ots.sort(key=lambda x: (x["Date"], x["Staff"]))
+    return out, ots
+
+
+def parse_penalties(wb) -> list[dict]:
+    """'Death Penalty Week NN & MM' 탭들 → Death Penalty 행 (빈 번호 행 제외, 탭 간 중복 제거)"""
+    out, seen = [], set()
+    for ws in wb.worksheets:
+        if "Death Penalty" not in ws.title: continue
+        for r in range(4, ws.max_row + 1):
+            player = cell_str(ws.cell(r, 3).value)
+            if not player: continue
+            d = ws.cell(r, 5).value
+            d = d.date().isoformat() if isinstance(d, datetime.datetime) else cell_str(d)
+            row = {"Date": d, "Player": player, "Character": cell_str(ws.cell(r, 4).value),
+                   "Shift": cell_str(ws.cell(r, 6).value), "Penalty Hours": _hours(ws.cell(r, 7).value),
+                   "Action": cell_str(ws.cell(r, 8).value),
+                   "IR": "" if cell_str(ws.cell(r, 9).value) == "Comment" else cell_str(ws.cell(r, 9).value),
+                   "Source": f"migrated:{ws.title.strip()}"}
+            key = (row["Date"], row["Player"], row["Character"], row["Shift"], r)
+            dup = (row["Date"], row["Player"], row["Character"], row["Shift"])
+            # 같은 사람·날짜·시프트가 여러 탭(겹치는 주)에 반복되면 한 번만
+            if any(k[:4] == dup and k[5] != ws.title for k in seen): continue
+            seen.add(key + (ws.title,)); out.append(row)
+    out.sort(key=lambda x: (x["Date"], x["Player"]))
+    return out
+
+
+def parse_payroll(wb) -> list[dict]:
+    """'WeekNN Payroll' 탭들 → Payroll History 행 (요약 블록 제외)"""
+    out = []
+    for ws in wb.worksheets:
+        m = re.match(r"Week(\d+) Payroll", ws.title)
+        if not m: continue
+        for r in range(2, ws.max_row + 1):
+            name = ws.cell(r, 1).value
+            if name in (None, ""): break                       # 첫 빈 줄 이후는 요약
+            out.append({"Week": f"W{m[1]}", "Player": str(name).strip(),
+                        "Total Hours": round(float(ws.cell(r, 2).value or 0), 2),
+                        "Shifts": int(ws.cell(r, 3).value or 0), "Characters": cell_str(ws.cell(r, 4).value)})
+    return out
+
+
 def next_week_rows(rows):
     """다음 주 자동 생성 규칙과 동일: 시간·사냥터만 복사, 플레이어·실적은 비움"""
     out = []
@@ -157,9 +241,8 @@ def build(src_path, tab, out_path, with_schedule=True):
         w = csv.writer(f); w.writerow(SCHEDULE_COLS)
         w.writerows([r.get(c, "") for c in SCHEDULE_COLS] for r in rows)
     # xlsx에는 이관 주만 (다음 주는 봇이 자동 생성). 비워두면 봇이 첫 기동 때 schedule_seed.csv로 채움
-    last = dates[-1].isoformat()
     for r in rows if with_schedule else []:
-        if r["Date"] <= last:
+        if True:
             sch.append([r.get(c) if r.get(c) != "" else None for c in SCHEDULE_COLS])
     for col, (h, f) in schedule_formulas(XLSX_LAST_ROW).items():
         c = sch[f"{col}1"]; c.value = h; c.fill = PatternFill("solid", fgColor="7F7F7F"); c.font = HDR_FONT
@@ -206,6 +289,86 @@ def build(src_path, tab, out_path, with_schedule=True):
         ws.freeze_panes = "C5"
         ws.column_dimensions["A"].width = 16; ws.column_dimensions["B"].width = 5; ws.column_dimensions["J"].width = 7
 
+    # ── TL Schedule / TL Board ──
+    tl, ot_rows = parse_tl(src)
+    last_week = max(r["Date"] for r in tl)
+    lw_start = (datetime.date.fromisoformat(last_week) - datetime.timedelta(days=6)).isoformat()
+    for r in [r for r in tl if r["Date"] >= lw_start]:          # 다음 주 초안: 근무 시간만 복사
+        d = datetime.date.fromisoformat(r["Date"]) + datetime.timedelta(days=7)
+        tl.append({"Date": d.isoformat(), "Day": r["Day"], "Leader": r["Leader"], "Shift": r["Shift"]})
+    tls = wb.create_sheet(TL_TAB)
+    header(tls, TL_COLS)
+    for r in tl:
+        tls.append([r.get(c) if r.get(c) not in ("", None) else None for c in TL_COLS])
+    for col, (h, f) in tl_formulas(XLSX_LAST_ROW).items():
+        c = tls[f"{col}1"]; c.value = h; c.fill = PatternFill("solid", fgColor="7F7F7F"); c.font = HDR_FONT
+        tls[f"{col}2"] = f
+    tls.freeze_panes = "A2"; tls.auto_filter.ref = "A1:F1"
+    for col, w in zip("ABCDEFGHI", [11, 5, 16, 14, 11, 24, 11, 26, 24]):
+        tls.column_dimensions[col].width = w
+
+    tlb = wb.create_sheet(TL_BOARD, index=3)
+    tlb["A1"] = "TEAM LEADER — Weekly Schedule"; tlb["A1"].font = Font(bold=True, size=14)
+    tlb["A2"] = "Week start (Sun):"; tlb["A2"].font = Font(bold=True)
+    tlb["B2"] = '=TEXT(TODAY()-WEEKDAY(TODAY())+1,"yyyy-mm-dd")'; tlb["B2"].fill = PatternFill("solid", fgColor="FFF2CC")
+    tlb["D2"] = "← 셀 = 근무시간 / 출근. OT Hrs = Overtime 탭 합계. 보기 전용 — 입력은 'TL Schedule' 탭에서."
+    tlb["D2"].font = Font(italic=True, color="7F7F7F")
+    for i, h in enumerate(["Leader"] + DAYS + ["OT Hrs"], 1):
+        c = tlb.cell(3, i, h); c.fill = HDR_FILL; c.font = HDR_FONT; c.alignment = Alignment(horizontal="center")
+    for ref, f in tl_board_formulas(XLSX_LAST_ROW).items():
+        tlb[ref] = f
+    tlb.freeze_panes = "B5"; tlb.column_dimensions["A"].width = 16
+    for j in range(7): tlb.column_dimensions[openpyxl.utils.get_column_letter(2 + j)].width = 17
+
+    # ── Payroll (Schedule 기반 자동 집계) / Payroll History ──
+    pay = wb.create_sheet(PAYROLL_TAB)
+    pay["A1"] = "PAYROLL — 플레이어 주간 근무시간 (Schedule 자동 집계)"; pay["A1"].font = Font(bold=True, size=14)
+    pay["A2"] = "Week start (Sun):"; pay["A2"].font = Font(bold=True)
+    pay["B2"] = '=TEXT(TODAY()-WEEKDAY(TODAY())+1,"yyyy-mm-dd")'; pay["B2"].fill = PatternFill("solid", fgColor="FFF2CC")
+    pay["D2"] = "← 플레이어가 입력된 시프트만 집계 (Hours = Time 기준). 지난 수기 집계는 'Payroll History' 탭."
+    pay["D2"].font = Font(italic=True, color="7F7F7F")
+    for i, h in enumerate(["Player", "Total Hours", "Shifts", "Characters"], 1):
+        c = pay.cell(4, i, h); c.fill = HDR_FILL; c.font = HDR_FONT
+    for ref, f in payroll_formulas(XLSX_LAST_ROW).items():
+        pay[ref] = f
+    pay.freeze_panes = "A5"
+    for col, w in zip("ABCD", [20, 11, 8, 70]): pay.column_dimensions[col].width = w
+
+    hist = wb.create_sheet(PAYROLL_HISTORY_TAB)
+    hcols = ["Week", "Player", "Total Hours", "Shifts", "Characters"]
+    header(hist, hcols)
+    for r in parse_payroll(src):
+        hist.append([r[c] for c in hcols])
+    hist.freeze_panes = "A2"; hist.auto_filter.ref = "A1:E1"
+    for col, w in zip("ABCDE", [7, 20, 11, 8, 90]): hist.column_dimensions[col].width = w
+
+    # ── 매니저 기록 탭: Overtime / Incentives / Death Penalty (디스코드 봇이 입력) ──
+    logs = {OVERTIME_TAB: (OVERTIME_COLS, ot_rows), INCENTIVE_TAB: (INCENTIVE_COLS, []),
+            PENALTY_TAB: (PENALTY_COLS, parse_penalties(src))}
+    for title, (cols, data) in logs.items():
+        ws = wb.create_sheet(title)
+        header(ws, cols)
+        wcol = openpyxl.utils.get_column_letter(len(cols) + 1)
+        c = ws[f"{wcol}1"]; c.value = "Week"; c.fill = PatternFill("solid", fgColor="7F7F7F"); c.font = HDR_FONT
+        for r in data:
+            ws.append([r.get(k) if r.get(k) not in ("", None) else None for k in cols])
+        ws[f"{wcol}2"] = week_formula(XLSX_LAST_ROW)          # 데이터 뒤에 써야 2행부터 데이터가 들어감
+        ws.freeze_panes = "A2"; ws.auto_filter.ref = f"A1:{openpyxl.utils.get_column_letter(len(cols))}1"
+        for i in range(len(cols)): ws.column_dimensions[openpyxl.utils.get_column_letter(i + 1)].width = 14
+
+    # ── Performance Pay: 기준표 그대로 복사 (값 + 병합) ──
+    pp_src = src["performance pay"]; pp = wb.create_sheet(PERF_PAY_TAB)
+    for row in pp_src.iter_rows(min_row=2, max_row=20):
+        for c in row:
+            if c.value not in (None, ""):
+                pp.cell(c.row - 1, c.column, c.value if not str(c.value).startswith("=") else None)
+    for m in pp_src.merged_cells.ranges:
+        if m.min_row >= 2 and m.max_row <= 20:
+            pp.merge_cells(start_row=m.min_row - 1, start_column=m.min_col, end_row=m.max_row - 1, end_column=m.max_col)
+    pp["A1"].font = Font(bold=True)
+    for col in "ABCDEFGHIJKLM": pp.column_dimensions[col].width = 11
+    pp.column_dimensions["A"].width = 14
+
     # ── Glossary / EventLog ──
     with open(os.path.join(DATA, "glossary.csv"), encoding="utf-8-sig") as f:
         for i, r in enumerate(csv.reader(f)):
@@ -222,14 +385,17 @@ def build(src_path, tab, out_path, with_schedule=True):
         ("• Schedule — 원장. 1행 = 계정 × 날짜 × 시프트(Slot). 시간·플레이어·사냥터·KPI·골드·물약을 여기서 입력/수정 (필터 사용)", False),
         ("   - Time: HH:MM-HH:MM 또는 OFF.  Hours/Week/Key/Display(P~S열)는 자동 계산 — 건드리지 말 것", False),
         ("• Accounts — 계정 마스터. Type=Client(고객) / Farming(농장), Status=Active/Paused/Inactive, Customer=고객명, SalesRep=담당 영업", False),
+        ("• TL Board / TL Schedule — 팀 리더 근무표 (Board = 주간 보기, Schedule = 입력: 근무시간·출근). TL OT는 Overtime 탭 (Role=TL). 이관: Week 16~39 + 다음 주 초안", False),
+        ("• Overtime / Incentives / Death Penalty — 매니저 기록 로그 (디스코드 봇 /ot /incentive /penalty 로 입력, 직접 입력도 가능). Performance Pay — 인센티브 기준표", False),
+        ("• Payroll — 선택한 주의 플레이어별 총 근무시간·시프트 수·담당 캐릭터 (Schedule에서 자동 집계) / Payroll History — 기존 수기 Payroll(W19·20·33·34)", False),
         ("• Glossary — 봇 용어 사전 / EventLog — 봇 기록(질문·재접속·정보)", False),
         ("", False),
         ("운영 규칙", True),
-        ("• 새 주 행은 봇이 자동 생성: 직전 주의 시간·사냥터를 복사하고 플레이어·실적은 비움 (Active 계정만)", False),
+        ("• 새 주 행은 봇이 자동 생성: 직전 주의 시간·사냥터를 복사하고 플레이어·실적은 비움 (Active 계정만). TL 근무표는 /week 명령 때 근무시간만 복사", False),
         ("• 계정을 고객↔농장으로 옮기려면 Accounts의 Type만 바꾸면 됨 (다음 주 생성분부터 반영, 이번 주는 Schedule C열도 변경)", False),
         ("• 로그인 정보(ID/비밀번호)는 이 시트에 절대 넣지 말 것", False),
         ("", False),
-        (f"이관: 원본 '{tab}' ({dates[0]}~{dates[-1]}). 다음 주부터는 봇이 자동 생성 (/week 명령으로 미리 생성 가능)", False),
+        (f"이관: 원본 '{tab}' ({dates[0]}~{dates[-1]}) + 다음 주 초안. 이후 주는 봇이 자동 생성 (/week 명령으로 미리 생성 가능)", False),
     ]
     if conflicts:
         lines += [("", False), ("⚠️ 확인 필요 — 마스터 CSV와 시트 배치가 다른 계정 (현재는 시트 배치 기준)", True)]
