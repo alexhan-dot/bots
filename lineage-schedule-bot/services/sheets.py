@@ -15,7 +15,7 @@ from services import clock
 from services.layout import (SCHEDULE_TAB, ACCOUNTS_TAB, SCHEDULE_COLS, METRIC_COLS, ACCOUNT_COLS,
                              DAYS, BOARDS, schedule_formulas, board_formulas,
                              TL_TAB, TL_BOARD, TL_COLS, tl_formulas, tl_board_formulas,
-                             PAYROLL_TAB, payroll_formulas, LOG_TABS, week_formula)
+                             PAYROLL_TAB, payroll_formulas, LOG_TABS, week_formula, SPILL_SEEDS)
 
 SHEET_ID = os.environ["SHEET_ID"]
 DATA = os.path.join(os.path.dirname(__file__), "..", "data")
@@ -73,7 +73,8 @@ def ensure_tabs():
     if TL_BOARD in titles:
         _write_formulas(book.worksheet(TL_BOARD), tl_board_formulas())
     if PAYROLL_TAB in titles:
-        _write_formulas(book.worksheet(PAYROLL_TAB), payroll_formulas())
+        # B2(보고 있는 기간)는 사람이 바꾼 값을 유지
+        _write_formulas(book.worksheet(PAYROLL_TAB), {k: v for k, v in payroll_formulas().items() if k != "B2"})
     ws = book.worksheet(SCHEDULE_TAB)
     if not ws.acell("A2").value:
         with open(os.path.join(DATA, "schedule_seed.csv"), encoding="utf-8") as f:
@@ -82,6 +83,8 @@ def ensure_tabs():
     load_master(force=True)
 
 def _write_formulas(ws, cells: dict):
+    if ws.title in SPILL_SEEDS:                       # xlsx 이관본의 값 목록을 지워야 A5 수식이 펼쳐짐
+        ws.batch_clear([SPILL_SEEDS[ws.title]])
     ws.batch_update([{"range": ref, "values": [[f]]} for ref, f in cells.items()],
                     value_input_option="USER_ENTERED")
 

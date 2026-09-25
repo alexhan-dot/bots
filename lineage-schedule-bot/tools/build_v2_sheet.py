@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.join(HERE, ".."))
 from services.layout import (SCHEDULE_COLS, ACCOUNT_COLS, DAYS, schedule_formulas, board_formulas,  # noqa: E402
                              TL_TAB, TL_BOARD, TL_COLS, tl_formulas, tl_board_formulas,
                              PAYROLL_TAB, PAYROLL_HISTORY_TAB, payroll_formulas, week_formula,
+                             PAYROLL_HEADERS, PAY_ANCHOR,
                              OVERTIME_TAB, OVERTIME_COLS, INCENTIVE_TAB, INCENTIVE_COLS,
                              PENALTY_TAB, PENALTY_COLS, PERF_PAY_TAB)
 XLSX_LAST_ROW = 50000   # xlsx 가져오기용 범위 제한 (봇이 기동 시 열린 범위로 다시 씀)
@@ -146,6 +147,9 @@ def parse_tl(wb) -> tuple[list[dict], list[dict]]:
     return out, ots
 
 
+DATE_TYPOS = {"2026-06030": "2026-06-30", "2026-22-16": "2026-08-16"}
+
+
 def parse_penalties(wb) -> list[dict]:
     """'Death Penalty Week NN & MM' 탭들 → Death Penalty 행 (빈 번호 행 제외, 탭 간 중복 제거)"""
     out, seen = [], set()
@@ -156,9 +160,12 @@ def parse_penalties(wb) -> list[dict]:
             if not player: continue
             d = ws.cell(r, 5).value
             d = d.date().isoformat() if isinstance(d, datetime.datetime) else cell_str(d)
+            action = cell_str(ws.cell(r, 8).value)
+            if d in DATE_TYPOS:                                # 원본 시트 오타 → 추정 날짜 (원본값은 Action 에 남김)
+                action = f"{action} (orig date: {d})".strip(); d = DATE_TYPOS[d]
             row = {"Date": d, "Player": player, "Character": cell_str(ws.cell(r, 4).value),
                    "Shift": cell_str(ws.cell(r, 6).value), "Penalty Hours": _hours(ws.cell(r, 7).value),
-                   "Action": cell_str(ws.cell(r, 8).value),
+                   "Action": action,
                    "IR": "" if cell_str(ws.cell(r, 9).value) == "Comment" else cell_str(ws.cell(r, 9).value),
                    "Source": f"migrated:{ws.title.strip()}"}
             key = (row["Date"], row["Player"], row["Character"], row["Shift"], r)
@@ -281,6 +288,12 @@ def build(src_path, tab, out_path, with_schedule=True):
         ws.cell(4, 1, "date →").font = Font(italic=True, color="7F7F7F")
         for ref, f in board_formulas(typ, XLSX_LAST_ROW).items():
             ws[ref] = f
+        # 목록(A:B)은 값으로 — xlsx 가져오기가 목록 수식을 계산하지 못함. 봇 기동 시 동적 수식으로 교체
+        wk0 = dates[0].isoformat(); wk1 = dates[-1].isoformat()
+        pairs = sorted({(r["Account"], r["Slot"]) for r in rows
+                        if r["Type"] == typ and wk0 <= r["Date"] <= wk1}, key=lambda x: (x[0].lower(), x[1]))
+        for i, (acc_name, slot) in enumerate(pairs):
+            ws.cell(5 + i, 1, acc_name); ws.cell(5 + i, 2, slot)
         for j in range(7):
             ws.cell(4, 3 + j).alignment = Alignment(horizontal="center")
             ws.column_dimensions[openpyxl.utils.get_column_letter(3 + j)].width = 17
@@ -304,7 +317,7 @@ def build(src_path, tab, out_path, with_schedule=True):
         c = tls[f"{col}1"]; c.value = h; c.fill = PatternFill("solid", fgColor="7F7F7F"); c.font = HDR_FONT
         tls[f"{col}2"] = f
     tls.freeze_panes = "A2"; tls.auto_filter.ref = "A1:F1"
-    for col, w in zip("ABCDEFGHI", [11, 5, 16, 14, 11, 24, 11, 26, 24]):
+    for col, w in zip("ABCDEFGHIJ", [11, 5, 16, 14, 11, 24, 11, 26, 24, 7]):
         tls.column_dimensions[col].width = w
 
     tlb = wb.create_sheet(TL_BOARD, index=3)
@@ -317,22 +330,49 @@ def build(src_path, tab, out_path, with_schedule=True):
         c = tlb.cell(3, i, h); c.fill = HDR_FILL; c.font = HDR_FONT; c.alignment = Alignment(horizontal="center")
     for ref, f in tl_board_formulas(XLSX_LAST_ROW).items():
         tlb[ref] = f
+    wk0, wk1 = dates[0].isoformat(), dates[-1].isoformat()
+    for i, name in enumerate(sorted({r["Leader"] for r in tl if wk0 <= r["Date"] <= wk1})):
+        tlb.cell(5 + i, 1, name)
     tlb.freeze_panes = "B5"; tlb.column_dimensions["A"].width = 16
     for j in range(7): tlb.column_dimensions[openpyxl.utils.get_column_letter(2 + j)].width = 17
 
-    # ── Payroll (Schedule 기반 자동 집계) / Payroll History ──
+    penalties = parse_penalties(src)
+
+    # ── Payroll (2주 단위, 자동 집계) / Payroll History ──
     pay = wb.create_sheet(PAYROLL_TAB)
-    pay["A1"] = "PAYROLL — 플레이어 주간 근무시간 (Schedule 자동 집계)"; pay["A1"].font = Font(bold=True, size=14)
-    pay["A2"] = "Week start (Sun):"; pay["A2"].font = Font(bold=True)
-    pay["B2"] = '=TEXT(TODAY()-WEEKDAY(TODAY())+1,"yyyy-mm-dd")'; pay["B2"].fill = PatternFill("solid", fgColor="FFF2CC")
-    pay["D2"] = "← 플레이어가 입력된 시프트만 집계 (Hours = Time 기준). 지난 수기 집계는 'Payroll History' 탭."
-    pay["D2"].font = Font(italic=True, color="7F7F7F")
-    for i, h in enumerate(["Player", "Total Hours", "Shifts", "Characters"], 1):
-        c = pay.cell(4, i, h); c.fill = HDR_FILL; c.font = HDR_FONT
+    pay["A1"] = "PAYROLL — 2-week pay period (auto: Schedule + TL hours + OT − Death Penalty, Incentives)"
+    pay["A1"].font = Font(bold=True, size=14)
+    pay["A2"] = "Period (Sun):"; pay["A2"].font = Font(bold=True)
+    pay["F2"] = "Anchor:"; pay["F2"].font = Font(bold=True)
+    pay["G2"] = PAY_ANCHOR
+    pay["H2"] = ("← B2 = 기간 시작 일요일 (기본: 오늘이 속한 기간, 다른 기간은 날짜 직접 입력). C2 = 2주차, D2 = 기간 끝. "
+                 "G2 = 2주 주기 기준일 (W37 시작).")
+    pay["H2"].font = Font(italic=True, color="7F7F7F")
+    pay["A3"] = ("Payable Hrs = Base(플레이어 시프트 + TL 근무) + OT − Death Penalty.  Incentives = Incentives 탭 금액 합계 (매니저 입력).")
+    pay["A3"].font = Font(italic=True, color="7F7F7F")
+    for i, h in enumerate(PAYROLL_HEADERS, 1):
+        c = pay.cell(4, i, h); c.fill = HDR_FILL; c.font = HDR_FONT; c.alignment = Alignment(horizontal="center")
     for ref, f in payroll_formulas(XLSX_LAST_ROW).items():
         pay[ref] = f
-    pay.freeze_panes = "A5"
-    for col, w in zip("ABCD", [20, 11, 8, 70]): pay.column_dimensions[col].width = w
+    # 직원 목록(A)은 현재 급여 기간 기준 값으로 (봇 기동 시 동적 수식으로 교체)
+    anchor = datetime.date.fromisoformat(PAY_ANCHOR)
+    p0 = anchor + datetime.timedelta(days=14 * ((dates[-1] - anchor).days // 14))
+    lo, hi = p0.isoformat(), (p0 + datetime.timedelta(days=13)).isoformat()
+    def shift_hours(t):
+        m = re.match(r"^(\d+):(\d+)-(\d+):(\d+)$", t or "")
+        return ((int(m[3]) + int(m[4]) / 60) - (int(m[1]) + int(m[2]) / 60)) % 24 if m else 0
+    names = {r.get("Player") for r in rows if lo <= r["Date"] <= hi and r.get("Player")
+             and r["Time"] != "OFF" and shift_hours(r["Time"]) > 0}
+    names |= {r["Leader"] for r in tl if lo <= r["Date"] <= hi and re.search(r"\d\s*[ap]m\s*-", r.get("Shift", ""), re.I)
+              and str(r.get("Attendance", "")).lower() != "absent"}
+    names |= {r["Staff"] for r in ot_rows if lo <= r["Date"] <= hi}
+    names |= {r["Player"] for r in penalties if lo <= r["Date"] <= hi}
+    for i, name in enumerate(sorted(n for n in names if n)):
+        pay.cell(5 + i, 1, name)
+    for ref in ("B2", "C2", "D2"):
+        pay[ref].fill = PatternFill("solid", fgColor="FFF2CC")
+    pay.freeze_panes = "B5"
+    for col, w in zip("ABCDEFGHIJ", [20, 11, 11, 10, 9, 11, 12, 11, 8, 60]): pay.column_dimensions[col].width = w
 
     hist = wb.create_sheet(PAYROLL_HISTORY_TAB)
     hcols = ["Week", "Player", "Total Hours", "Shifts", "Characters"]
@@ -344,7 +384,7 @@ def build(src_path, tab, out_path, with_schedule=True):
 
     # ── 매니저 기록 탭: Overtime / Incentives / Death Penalty (디스코드 봇이 입력) ──
     logs = {OVERTIME_TAB: (OVERTIME_COLS, ot_rows), INCENTIVE_TAB: (INCENTIVE_COLS, []),
-            PENALTY_TAB: (PENALTY_COLS, parse_penalties(src))}
+            PENALTY_TAB: (PENALTY_COLS, penalties)}
     for title, (cols, data) in logs.items():
         ws = wb.create_sheet(title)
         header(ws, cols)
@@ -387,7 +427,7 @@ def build(src_path, tab, out_path, with_schedule=True):
         ("• Accounts — 계정 마스터. Type=Client(고객) / Farming(농장), Status=Active/Paused/Inactive, Customer=고객명, SalesRep=담당 영업", False),
         ("• TL Board / TL Schedule — 팀 리더 근무표 (Board = 주간 보기, Schedule = 입력: 근무시간·출근). TL OT는 Overtime 탭 (Role=TL). 이관: Week 16~39 + 다음 주 초안", False),
         ("• Overtime / Incentives / Death Penalty — 매니저 기록 로그 (디스코드 봇 /ot /incentive /penalty 로 입력, 직접 입력도 가능). Performance Pay — 인센티브 기준표", False),
-        ("• Payroll — 선택한 주의 플레이어별 총 근무시간·시프트 수·담당 캐릭터 (Schedule에서 자동 집계) / Payroll History — 기존 수기 Payroll(W19·20·33·34)", False),
+        ("• Payroll — 2주 단위(W37-38, W39-40 …) 직원별 1·2주차 근무시간, OT, 페널티, 지급 시간, 인센티브 합계, 담당 캐릭터 자동 집계. B2에 기간 시작일 입력하면 과거 기간 조회 / Payroll History — 기존 수기 Payroll(W19·20·33·34)", False),
         ("• Glossary — 봇 용어 사전 / EventLog — 봇 기록(질문·재접속·정보)", False),
         ("", False),
         ("운영 규칙", True),

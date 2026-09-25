@@ -25,8 +25,8 @@
 | `Client Board` / `Farming Board` | 고객 / 농장 계정 주간 그리드 (셀 = 시간⏎플레이어⏎@사냥터). B2에 일요일 날짜 넣으면 다른 주 조회 | 보기 전용 (수식) |
 | `Schedule` | 원장. 1행 = 계정 × 날짜 × 시프트(Slot). A:O 입력, P:S(Hours/Week/Key/Display) 자동 계산 | 사람 + 봇 |
 | `Accounts` | 계정 마스터. **Type = Client(고객) / Farming(농장)**, Status = Active/Paused/Inactive, Customer, SalesRep | 사람 + 봇 |
-| `TL Board` / `TL Schedule` | 팀 리더 근무표 (주간 보기 / 입력: 근무시간·출근). Week 16~39 이관 | 사람 (+ `/week` 복사) |
-| `Payroll` | 선택한 주의 플레이어별 총 시간·시프트 수·담당 캐릭터 — Schedule에서 자동 집계 | 보기 전용 (수식) |
+| `TL Board` / `TL Schedule` | 팀 리더 근무표 (주간 보기 / 입력: 근무시간·출근). Week 16~39 이관. J열 Hours = "8am-4pm" 형식에서 자동 계산 (OFF·CANCEL OFF·Absent = 0) | 사람 (+ `/week` 복사) |
+| `Payroll` | **2주 단위 급여 기간** 직원별 집계: Week 1/2 Hrs(플레이어 시프트 + TL 근무) · OT · Death Penalty 차감 · Payable Hrs · Incentives(매니저 입력 금액 합계) · Shifts · Characters. B2 = 기간 시작 일요일(기본: 오늘이 속한 기간, 기준일 G2 = 2026-09-06), 다른 기간은 B2에 날짜 입력 | 보기 전용 (수식) |
 | `Payroll History` | 기존 수기 Payroll (W19·20·33·34) | 기록 |
 | `Overtime` | OT 로그 (직원·계정·시프트·OT 시간·사유·매니저). TL OT 이관분 포함 | 디스코드 봇 + 사람 |
 | `Incentives` | 인센티브 로그 | 디스코드 봇 + 사람 |
@@ -36,6 +36,10 @@
 
 **적용 방법**: `sheet/Lineage_Schedule_v2.xlsx` 를 새 시트에서 *파일 → 가져오기 → 업로드 → "스프레드시트 바꾸기"* (시트 ID 유지).
 봇 기동 시 계산 수식(Board·Payroll·Week 열)을 열린 범위로 다시 쓰고, 빠진 기록 탭은 헤더만 만들어 둠.
+xlsx 가져오기는 목록 수식(SORT/UNIQUE/FILTER)을 계산하지 못해 Board·Payroll의 A열 목록은 값으로 들어가 있음 → **봇이 처음 기동할 때 동적 수식으로 바뀜** (그 전까지는 새 직원·계정이 목록에 자동 추가되지 않음).
+합계 열(Hours·OT·Payroll)은 행마다 수식 (SUMIFS 는 ARRAYFORMULA 안에서 가져오기 시 첫 값만 계산되기 때문).
+
+**급여 계산**: `Payable Hrs = Base(Week1 + Week2) + OT − Penalty`. 인센티브는 매니저가 `Incentives` 탭(또는 `/incentive`)에 금액을 직접 입력 → Payroll H열에 기간 합계. 급여 기간은 2주(W37-38, W39-40, …) — `layout.PAY_ANCHOR` 로 기준일 변경.
 
 - 주간 탭을 매주 새로 만들지 않음. 새 주 첫 작업(또는 `/week` 명령) 때 직전 주의 **시간·사냥터를 복사**, 플레이어·실적은 비움 (Active 계정만)
 - 고객↔농장 이동 = `Accounts`의 Type 변경 (다음 주 생성분부터 반영)

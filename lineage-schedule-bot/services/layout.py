@@ -46,8 +46,9 @@ def board_formulas(type_: str, last_row: int | None = None) -> dict:
         f[f"{col}4"] = f'=TEXT(DATEVALUE($B$2)+{j},"yyyy-mm-dd")'
         f[f"{col}{r0}"] = (f'=ARRAYFORMULA(IF($A{r0}:$A{rl}="","",IFERROR(VLOOKUP({col}$4&"|"&$A{r0}:$A{rl}'
                            f'&"|"&$B{r0}:$B{rl},Schedule!$R:$S,2,FALSE),"")))')
-    f[f"J{r0}"] = (f'=ARRAYFORMULA(IF($A{r0}:$A{rl}="","",SUMIFS(Schedule!$P:$P,Schedule!$Q:$Q,$B$2,'
-                   f'Schedule!$D:$D,$A{r0}:$A{rl},Schedule!$E:$E,$B{r0}:$B{rl})))')
+    for r in range(r0, rl + 1):              # SUMIFS 는 ARRAYFORMULA 안에서 xlsx 가져오기 시 첫 값만 계산 → 행마다
+        f[f"J{r}"] = (f'=IF($A{r}="","",SUMIFS(Schedule!$P:$P,Schedule!$Q:$Q,$B$2,'
+                      f'Schedule!$D:$D,$A{r},Schedule!$E:$E,$B{r}))')
     return f
 
 
@@ -65,7 +66,19 @@ def tl_formulas(last_row: int | None = None) -> dict:
         "G": ("Week", f'=ARRAYFORMULA(IF({A}="",,TEXT({date}-WEEKDAY({date})+1,"yyyy-mm-dd")))'),
         "H": ("Key", f'=ARRAYFORMULA(IF({A}="",,TEXT({date},"yyyy-mm-dd")&"|"&{C}))'),
         "I": ("Display", f'=ARRAYFORMULA(IF({A}="",,{D}&IF({E}="","",CHAR(10)&{E})))'),
+        "J": ("Hours", tl_hours(D, E, A)),
     }
+
+
+def tl_hours(D: str, E: str, A: str) -> str:
+    """TL 근무시간: "8am-4pm" / "10pm-4am" / "12am-8am" → 시간. OFF·CANCEL OFF 등 못 읽는 값, 결근(Absent)은 0"""
+    ok = f'REGEXMATCH({D},"^\\s*\\d{{1,2}}(:\\d\\d)?\\s*[aApP][mM]\\s*-\\s*\\d{{1,2}}(:\\d\\d)?\\s*[aApP][mM]")'
+    start = (f'(MOD(VALUE(REGEXEXTRACT({D},"^\\s*(\\d{{1,2}})")),12)'
+             f'+12*REGEXMATCH({D},"^\\s*\\d{{1,2}}(:\\d\\d)?\\s*[pP][mM]"))')
+    end = (f'(MOD(VALUE(REGEXEXTRACT({D},"-\\s*(\\d{{1,2}})")),12)'
+           f'+12*REGEXMATCH({D},"-\\s*\\d{{1,2}}(:\\d\\d)?\\s*[pP][mM]"))')
+    return (f'=ARRAYFORMULA(IF({A}="",,IF(({ok}=FALSE)+(LOWER({E})="absent"),0,'
+            f'IFERROR(MOD({end}-{start},24),0))))')
 
 
 def tl_board_formulas(last_row: int | None = None) -> dict:
@@ -79,24 +92,61 @@ def tl_board_formulas(last_row: int | None = None) -> dict:
         f[f"{col}{r0}"] = (f'=ARRAYFORMULA(IF($A{r0}:$A{rl}="","",IFERROR(VLOOKUP({col}$4&"|"&$A{r0}:$A{rl},'
                            f'{t}!$H:$I,2,FALSE),"")))')
     # OT 합계: Overtime 탭에서 해당 주(M열 Week) 리더 이름으로 합산
-    f[f"I{r0}"] = (f'=ARRAYFORMULA(IF($A{r0}:$A{rl}="","",SUMIFS(Overtime!$H:$H,Overtime!$B:$B,$A{r0}:$A{rl},'
-                   f'Overtime!$M:$M,$B$2)))')
+    for r in range(r0, rl + 1):
+        f[f"I{r}"] = f'=IF($A{r}="","",SUMIFS(Overtime!$H:$H,Overtime!$B:$B,$A{r},Overtime!$M:$M,$B$2))'
     return f
 
 
-# ── Payroll (Schedule에서 주별 플레이어 근무시간 자동 집계) ──
+# ── Payroll: 2주 단위 급여 집계 (Schedule·TL 근무 + OT − 페널티, 인센티브 합계) ──
 PAYROLL_TAB, PAYROLL_HISTORY_TAB = "Payroll", "Payroll History"
 PAYROLL_ROWS = 200
+PAY_ANCHOR = "2026-09-06"      # 급여 기간 기준 일요일 (W37 시작). 2주 단위: W37-38, W39-40, ...
+PAYROLL_HEADERS = ["Staff", "Week 1 Hrs", "Week 2 Hrs", "Base Hrs", "OT Hrs", "Penalty Hrs",
+                   "Payable Hrs", "Incentives", "Shifts", "Characters"]
 
 
 def payroll_formulas(last_row: int | None = None) -> dict:
-    """A:C = 플레이어·총 시간·시프트 수 (QUERY), D = 담당 캐릭터 목록"""
+    """Payroll 탭 수식. B2 = 기간 시작(일요일, 기본: 오늘이 속한 기간), C2 = 2주차 시작, D2 = 기간 끝, G2 = 기준일.
+    A열 직원 목록 = 기간 내 근무(플레이어·TL) / OT / 인센티브 / 페널티 기록이 있는 사람 전부."""
     n = "" if last_row is None else str(last_row)
-    f = {"A5": (f'=IFERROR(QUERY(Schedule!A2:S{n},"select G, sum(P), count(G) where Q = \'"&$B$2&"\' '
-                f'and G <> \'\' and P > 0 group by G order by sum(P) desc label sum(P) \'\', count(G) \'\'",0),"")')}
-    for r in range(BOARD_FIRST_ROW, BOARD_FIRST_ROW + PAYROLL_ROWS):
-        f[f"D{r}"] = (f'=IF($A{r}="","",TEXTJOIN(", ",TRUE,UNIQUE(FILTER(Schedule!$D$2:$D{n},'
-                      f'Schedule!$G$2:$G{n}=$A{r},Schedule!$Q$2:$Q{n}=$B$2,Schedule!$P$2:$P{n}>0))))')
+    r0 = BOARD_FIRST_ROW; rl = r0 + PAYROLL_ROWS - 1
+    tl, dp = f"'{TL_TAB}'", f"'{PENALTY_TAB}'"
+    in_period = lambda col: f"(({col}=$B$2)+({col}=$C$2))"          # Week 열이 1주차 또는 2주차
+
+    def both(fn):                                                  # 1주차 + 2주차 합
+        return f"{fn('$B$2')}+{fn('$C$2')}"
+
+    names = ",".join([
+        f"IFERROR(FILTER(Schedule!G2:G{n},Schedule!P2:P{n}>0,{in_period(f'Schedule!Q2:Q{n}')}))",
+        f"IFERROR(FILTER({tl}!C2:C{n},{tl}!J2:J{n}>0,{in_period(f'{tl}!G2:G{n}')}))",
+        f"IFERROR(FILTER({OVERTIME_TAB}!B2:B{n},{in_period(f'{OVERTIME_TAB}!M2:M{n}')}))",
+        f"IFERROR(FILTER({INCENTIVE_TAB}!B2:B{n},{in_period(f'{INCENTIVE_TAB}!M2:M{n}')}))",
+        f"IFERROR(FILTER({dp}!B2:B{n},{in_period(f'{dp}!K2:K{n}')}))",
+    ])
+    f = {
+        "B2": f'=TEXT(DATEVALUE($G$2)+14*FLOOR((TODAY()-DATEVALUE($G$2))/14),"yyyy-mm-dd")',
+        "C2": '=TEXT(DATEVALUE($B$2)+7,"yyyy-mm-dd")',
+        "D2": '=TEXT(DATEVALUE($B$2)+13,"yyyy-mm-dd")',
+        f"A{r0}": f'=IFERROR(SORT(UNIQUE(QUERY(FLATTEN({names}),"select Col1 where Col1 is not null and Col1 <> \'\'",0))),"")',
+    }
+    # 합계 열은 행마다 (SUMIFS/COUNTIFS 는 ARRAYFORMULA 안에서 xlsx 가져오기 시 첫 값만 계산됨)
+    for r in range(r0, rl + 1):
+        a = f"$A{r}"
+        hours = lambda w: (f"SUMIFS(Schedule!$P:$P,Schedule!$G:$G,{a},Schedule!$Q:$Q,{w})"
+                           f"+SUMIFS({tl}!$J:$J,{tl}!$C:$C,{a},{tl}!$G:$G,{w})")
+        row = lambda expr: f'=IF({a}="","",{expr})'
+        f[f"B{r}"] = row(hours("$B$2"))
+        f[f"C{r}"] = row(hours("$C$2"))
+        f[f"D{r}"] = row(f"B{r}+C{r}")
+        f[f"E{r}"] = row(both(lambda w: f"SUMIFS({OVERTIME_TAB}!$H:$H,{OVERTIME_TAB}!$B:$B,{a},{OVERTIME_TAB}!$M:$M,{w})"))
+        f[f"F{r}"] = row(both(lambda w: f"SUMIFS({dp}!$E:$E,{dp}!$B:$B,{a},{dp}!$K:$K,{w})"))
+        f[f"G{r}"] = row(f"D{r}+E{r}-F{r}")
+        f[f"H{r}"] = row(both(lambda w: f"SUMIFS({INCENTIVE_TAB}!$H:$H,{INCENTIVE_TAB}!$B:$B,{a},{INCENTIVE_TAB}!$M:$M,{w})"))
+        f[f"I{r}"] = row(both(lambda w: f'COUNTIFS(Schedule!$G:$G,{a},Schedule!$Q:$Q,{w},Schedule!$P:$P,">0")'
+                                        f'+COUNTIFS({tl}!$C:$C,{a},{tl}!$G:$G,{w},{tl}!$J:$J,">0")'))
+    for r in range(r0, rl + 1):                                    # 담당 캐릭터 (TEXTJOIN 은 행마다)
+        f[f"J{r}"] = (f'=IF($A{r}="","",IFERROR(TEXTJOIN(", ",TRUE,UNIQUE(FILTER(Schedule!$D$2:$D{n},'
+                      f'Schedule!$G$2:$G{n}=$A{r},Schedule!$P$2:$P{n}>0,{in_period(f"Schedule!$Q$2:$Q{n}")}))),""))')
     return f
 
 
@@ -120,3 +170,9 @@ def week_formula(last_row: int | None = None) -> str:
     A = f"A2:A{n}"
     date = f'IF(ISNUMBER({A}),{A},IFERROR(DATEVALUE({A})))'
     return f'=ARRAYFORMULA(IF({A}="",,TEXT({date}-WEEKDAY({date})+1,"yyyy-mm-dd")))'
+
+
+# xlsx 가져오기는 SORT/UNIQUE/FILTER 같은 목록 수식을 계산하지 못함 → xlsx 에는 목록을 값으로 넣고,
+# 봇이 기동할 때 이 범위를 비운 뒤 A5 에 동적 수식을 씀 (새 직원·계정 자동 반영)
+SPILL_SEEDS = {"Client Board": "A6:B300", "Farming Board": "A6:B300", TL_BOARD: "A6:A300",
+               PAYROLL_TAB: f"A6:A{BOARD_FIRST_ROW + PAYROLL_ROWS - 1}"}

@@ -109,7 +109,8 @@ gcloud firestore databases describe --database="(default)" 2>/dev/null || \
 2. `Accounts` 탭에서 README 탭 하단 "⚠️ 확인 필요" 6개 계정(Kangaroo, Kyoryu, Pele, Sarim, Sudden, Taejo)의 Type 확정
 3. (선택) Class 빈 칸, Customer, SalesRep 입력
 
-**검증**: Client/Farming/TL Board에 이번 주가 보이고 Payroll 탭에 플레이어별 시간이 집계되는지
+**검증**: Client/Farming/TL Board에 이번 주가 보이고 Payroll 탭에 이번 급여 기간(2026-09-20 ~ 10-03)의 직원별 시간·OT·페널티·인센티브가 집계되는지.
+Board/Payroll A열 목록은 봇 첫 기동(ensure_tabs) 때 동적 수식으로 교체됨 — 배포 후 한 번 더 확인.
 
 ## 4. Phase 4 — 외부 키 수집 (사용자에게 하나씩 요청)
 
