@@ -11,7 +11,7 @@
 import os, re, csv, datetime, functools, threading, logging
 import gspread
 from google.auth import default
-from services import clock
+from services import clock, shiftutil
 from services.layout import (SCHEDULE_TAB, ARCHIVE_TAB, ALL_TAB, TODAY_TAB, TODAY_COLS, all_shifts_formula,
                              today_formulas, ACCOUNTS_TAB, SCHEDULE_COLS, METRIC_COLS, ACCOUNT_COLS,
                              DAYS, BOARDS, schedule_formulas, board_formulas,
@@ -502,15 +502,22 @@ def _apply_new(s: Schedule, op) -> str:
     if op.get("end_date"):                      # 기간 한정 → 끝난 뒤 주에는 자동 복사하지 않음
         _set_until(ch, hi)
     ground = op.get("ground") or ""
+    day_times: dict = {}                        # 8시간 넘는 시간은 8시간씩 나눠 슬롯을 늘림 (자정 넘는 조각은 다음 날)
     d = lo
     while d <= hi:
+        for t in per_day.get(OP_DAYS[d.weekday()], []):
+            for dd, tt in shiftutil.split(d, t):
+                day_times.setdefault(dd, []).append(tt)
+        day_times.setdefault(d, [])
+        d += datetime.timedelta(days=1)
+    n_slots = max((len(v) for v in day_times.values()), default=1) or 1
+    for d in sorted(day_times):
         s.ensure_week(week_start(d))
-        s.set_day_times(ch, type_, d, per_day.get(OP_DAYS[d.weekday()], []), n_slots)
+        s.set_day_times(ch, type_, d, day_times[d], len(day_times[d]) or 1)
         if ground:
             for n, r in s.on(ch, d):
                 if r["Time"] != "OFF" and r.get("Hunting Ground") != ground:
                     s.set(n, r, **{"Hunting Ground": ground})
-        d += datetime.timedelta(days=1)
     extra = f", 사냥터 {ground}" if ground else ""
     return f"{ch} [{type_}] 신규 등록 — 슬롯 {n_slots}개, {lo}~{hi} 반영{extra}"
 
@@ -569,11 +576,32 @@ def _apply_swap(s: Schedule, op) -> str:
 def _apply_extend(s: Schedule, op) -> str:
     ch = op["character"]; d = datetime.date.fromisoformat(op["date"])
     s.ensure_week(week_start(d))
+    type_ = (master_row(ch) or {}).get("Type") or "Client"
+    parts = shiftutil.split(d, op["new_time"])                 # 8시간 넘으면 나머지는 추가 슬롯 (다른 플레이어용)
     for n, r in s.on(ch, d):
         if r["Time"].strip() == op["shift_time"].strip():
-            s.set(n, r, Time=op["new_time"])
-            return f"{ch} {d}: {op['shift_time']} → {op['new_time']} (해당 일자만 변경)"
+            s.set(n, r, Time=parts[0][1])
+            keep = {k: r.get(k, "") for k in ("Player", "Hunting Ground") if r.get(k)}   # 연장은 보통 같은 플레이어
+            extra = [add_shift(s, ch, type_, dd, t, **keep) for dd, t in parts[1:]]
+            more = f" + 추가 슬롯 {', '.join(extra)}" if extra else ""
+            return f"{ch} {d}: {op['shift_time']} → {parts[0][1]}{more} (해당 일자만 변경)"
     raise ValueError(f"{ch}의 {d} {op['shift_time']} 시프트를 찾지 못했습니다.")
+
+
+def add_shift(s: "Schedule", ch: str, type_: str, d: datetime.date, time: str, **extra) -> str:
+    """그 날짜의 빈(OFF) 슬롯에 넣거나, 없으면 슬롯을 하나 늘림. 반환: "MM-DD #슬롯 시간" """
+    s.ensure_week(week_start(d))
+    rows = s.on(ch, d)
+    free = [(n, r) for n, r in rows if r["Time"] == "OFF" and n != ARCHIVED]
+    if free:
+        n, r = free[0]
+        s.set(n, r, Time=time, **extra)
+        slot = r["Slot"]
+    else:
+        slot = max((r["Slot"] for _, r in rows), default=0) + 1
+        s.add(Date=d.isoformat(), Type=type_, Account=ch, Slot=slot, Time=time, **extra)
+    return f"{d.isoformat()[5:]} #{slot} {time}"
+
 
 def _apply_hunting_ground(s: Schedule, op) -> str:
     ch = op["character"]
@@ -605,18 +633,13 @@ def _apply_ledger(s: Schedule, op) -> str:
         rows = s.on(ch, d)
         same = [(n, r) for n, r in rows if r["Time"].strip() == e["time"]]
         if e["action"] == "delete":
-            for n, r in same: s.set(n, r, Time="OFF")
+            for dd, t in shiftutil.split(d, e["time"]):          # 나눠 들어간 조각까지 삭제
+                for n, r in s.on(ch, dd):
+                    if r["Time"].strip() in (t, e["time"]): s.set(n, r, Time="OFF")
         elif not same:
-            free = [(n, r) for n, r in rows if r["Time"] == "OFF" and n not in (None, ARCHIVED)]
-            if free:
-                s.set(free[0][0], free[0][1], Time=e["time"])
-            else:                                      # 새 슬롯: 해당 주 나머지 요일은 OFF로 채워 그리드 유지
-                slot = max((r["Slot"] for _, r in s.week(week_start(d), ch)), default=0) + 1
-                for i in range(7):
-                    day = week_start(d) + datetime.timedelta(days=i)
-                    if day < _today(): continue            # 지난 날은 Archive — 빈 칸 만들지 않음
-                    s.add(Date=day.isoformat(), Type=type_, Account=ch, Slot=slot,
-                          Time=e["time"] if day == d else "OFF")
+            for dd, t in shiftutil.split(d, e["time"]):
+                if not any(r["Time"].strip() == t for _, r in s.on(ch, dd)):
+                    add_shift(s, ch, type_, dd, t)
         done.append(f"{e['date']} {e['time']} {'삭제' if e['action'] == 'delete' else '추가'}")
     return f"{ch}: " + (", ".join(done) or "반영할 항목 없음 (지난 날짜)")
 

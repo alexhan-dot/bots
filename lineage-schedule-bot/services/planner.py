@@ -8,7 +8,7 @@ Planner 탭 1행 = 반복 규칙:  Account · Slot · Days · Time · Player · 
 """
 import datetime, re
 from dataclasses import dataclass, field, asdict
-from services import sheets, clock
+from services import sheets, clock, shiftutil
 from services.layout import PLANNER_TAB, PLANNER_COLS, SETTINGS_TAB, SCHEDULE_COLS
 
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]          # date.weekday() 순서
@@ -253,22 +253,29 @@ def build(inline: dict | None = None, lo: str | None = None, hi: str | None = No
         d = rule.lo
         while d <= rule.hi:
             if d.weekday() in rule.days:
-                existing = {r["Slot"]: (n, r) for n, r in s.on(rule.account, d)}
-                key = (d, rule.account, rule.slot)
-                base = final.get(key) or (existing.get(rule.slot) or (None, None))[1]
-                vals = {}
-                if rule.time: vals["Time"] = rule.time
-                if rule.player: vals["Player"] = rule.player
-                if rule.ground: vals["Hunting Ground"] = rule.ground
-                if base is None and "Time" not in vals:
-                    plan.warnings.append(f"{rule.account} #{rule.slot} {d}: no shift there yet — add a Time")
-                else:
-                    changes.append((rule, d, existing.get(rule.slot), vals))
-                    final[key] = {**(base or {}), **vals, "Account": rule.account, "Slot": rule.slot, "Date": d.isoformat()}
+                # 8시간 넘는 시간은 8시간씩 나눠 다음 슬롯으로 (두 번째 조각부터는 다른 플레이어 — 비워 둠)
+                parts = shiftutil.split(d, rule.time) if rule.time and rule.time != "OFF" else [(d, rule.time)]
+                if len(parts) > 1 and rule.player:
+                    plan.warnings.append(f"{rule.account}: {rule.time} is over {shiftutil.MAX_HOURS}h — split into "
+                                         f"{len(parts)} slots; only the first gets {rule.player}")
+                for i, (dd, t) in enumerate(parts):
+                    slot = rule.slot + i
+                    existing = {r["Slot"]: (n, r) for n, r in s.on(rule.account, dd)}
+                    key = (dd, rule.account, slot)
+                    base = final.get(key) or (existing.get(slot) or (None, None))[1]
+                    vals = {}
+                    if t: vals["Time"] = t
+                    if rule.player and i == 0: vals["Player"] = rule.player
+                    if rule.ground: vals["Hunting Ground"] = rule.ground
+                    if base is None and "Time" not in vals:
+                        plan.warnings.append(f"{rule.account} #{slot} {dd}: no shift there yet — add a Time")
+                    else:
+                        changes.append((rule, dd, existing.get(slot), vals, slot))
+                        final[key] = {**(base or {}), **vals, "Account": rule.account, "Slot": slot, "Date": dd.isoformat()}
             d += datetime.timedelta(days=1)
     seen = set()                                              # 통계: 같은 칸을 여러 규칙이 바꾸면 마지막만 셈
-    for rule, d, ex, vals in reversed(changes):
-        key = (d, rule.account, rule.slot)
+    for rule, d, ex, vals, slot in reversed(changes):
+        key = (d, rule.account, slot)
         if key in seen: continue
         seen.add(key)
         if ex is None: plan.new += 1
@@ -330,8 +337,8 @@ def _apply(book, inline, lo, hi, account, reapply, by) -> Plan:
     plan, changes, s = build(inline, lo, hi, account, reapply, book=book)
     master = {r["Account"]: r for r in sheets.load_master()}
     added = {}
-    for rule, d, ex, vals in changes:
-        key = (d, rule.account, rule.slot)
+    for rule, d, ex, vals, slot in changes:
+        key = (d, rule.account, slot)
         if ex is not None:
             n, row = ex
             diff = {k: v for k, v in vals.items() if str(row.get(k, "")) != str(v)}
@@ -340,7 +347,7 @@ def _apply(book, inline, lo, hi, account, reapply, by) -> Plan:
             added[key].update(vals)
         else:
             s.add(Date=d.isoformat(), Type=master.get(rule.account, {}).get("Type", ""), Account=rule.account,
-                  Slot=rule.slot, **vals)
+                  Slot=slot, **vals)
             added[key] = s._new[-1]
     s.flush()
     stamp = f"Applied {clock.stamp()}" + (f" by {by}" if by else "")

@@ -13,7 +13,7 @@ kind:
 """
 import re, datetime
 from dataclasses import dataclass, field, asdict
-from services import index, sheets, clock
+from services import index, sheets, clock, shiftutil
 from services.layout import OVERTIME_TAB, INCENTIVE_TAB, PENALTY_TAB
 
 KINDS = ("ot", "incentive", "penalty", "assign", "off", "extend")
@@ -197,7 +197,10 @@ def preview_lines(d: Draft) -> list[tuple[str, str]]:
     else:
         out.append(("Account", f.get("account", "?")))
         if d.kind == "assign": out.append(("Player", f.get("player", "?")))
-        if d.kind == "extend": out.append(("New time", f.get("new_time", "?")))
+        if d.kind == "extend":
+            parts = shiftutil.split(datetime.date.fromisoformat(f["date"]), f.get("new_time", "")) if f.get("new_time") and f.get("date") else []
+            out.append(("New time", " + ".join(f"{t}" + (f" ({dd.isoformat()[5:]})" if dd.isoformat() != f["date"] else "") for dd, t in parts)
+                        + ("  ← over 8h: extra slot for another player" if len(parts) > 1 else "") if parts else f.get("new_time", "?")))
     for s in d.selected:
         out.append(("Matched shift", _shift_text(s)))
         if d.kind == "penalty": out.append(("Shift", shift_name(s["time"])))
@@ -244,6 +247,12 @@ def commit(d: Draft, manager: str, source: str = "discord") -> str:
         msg = f"Death penalty {_num(f['hours'])}h — {f.get('staff')}"
     else:
         changed = []
+        if d.kind == "extend" and len(shiftutil.split(datetime.date.fromisoformat(f["date"]), f.get("new_time", ""))) > 1:
+            for s in d.selected:                         # 8시간 넘음 → 나머지는 추가 슬롯 (시트 쪽에서 나눔)
+                changed.append(sheets.apply({"type": "EXTEND", "character": s["account"], "date": s["date"],
+                                             "shift_time": s["time"], "new_time": f["new_time"]}))
+            index.invalidate()
+            return f"{TITLES[d.kind]} — " + "; ".join(changed)
         for s in d.selected:
             fields = {"assign": {"Player": f.get("player")}, "off": {"Time": "OFF"},
                       "extend": {"Time": f.get("new_time")}}[d.kind]
