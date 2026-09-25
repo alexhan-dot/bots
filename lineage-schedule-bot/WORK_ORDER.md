@@ -43,7 +43,10 @@ env.yaml.example / deploy.sh / Dockerfile / requirements.txt / README.md
 ```
 
 ### 시트 — `Lineage Schedule v2` (SHEET_ID=1fMQDRmGVVtaUR0cVBzzSaowHU38clVuON1PoxGWCT_A)
-- 고객(Client)/농장(Farming) 분리 구조. 탭: `Client Board`, `Farming Board`, `Schedule`, `Accounts`, `Glossary`, `EventLog` (README.md 참고)
+- 고객(Client)/농장(Farming) 분리 구조. 탭: `Client Board`, `Farming Board`, `Schedule`, `Accounts`, `Planner`, `Settings`, `Payroll`, `Glossary`, `EventLog` 등 (README.md 참고)
+- **급여 = 월~일 기준 2주 단위** (기준 월요일 Payroll!G2 = 2026-09-07 → 9/21~10/4, 10/5~10/18 …). 보드의 주간 보기(일~토)와 별개로 각 탭 `Pay Week`(월요일) 열로 합산
+- **정기점검**: Settings 탭 (기본 수요일 05:00-09:00) — 겹치는 시프트 시간은 Hours에서 자동 차감
+- 봇 기동(ensure_tabs) 시: Settings·Planner 탭 생성, Schedule T·U / TL K / 로그 탭 Pay Week 열 추가, Payroll 기준일을 월요일로 교정
 - 기존 수기 시트(1dwv88…)는 봇이 사용하지 않음 — **서비스계정에 공유하지 말 것** (Login Credentials 탭 포함)
 - Schedule 데이터는 봇 첫 기동 때 `data/schedule_seed.csv`(Week 39 이관분 + Week 40)로 자동 채워짐
 
@@ -166,8 +169,10 @@ bash deploy.sh            # REGION 환경변수로 리전 변경 가능: REGION=
 9. 매니저(디스코드) → `/schedule account:Alex` → 오늘 시프트 즉시 표시
 10. 매니저 → `/ot staff:<오늘 근무자> hours:1 reason:test` → 매칭된 시프트 미리보기 → Confirm → Overtime 탭에 행 + 채널 로그 → 확인 후 행 삭제
 11. 매니저 → `/log <근무자> 1h OT today test` → 같은 미리보기가 뜨는지 (AI) → Cancel
+12. 매니저 → Planner 탭에 테스트 규칙 1줄(다음 주 수요일 하루, 04:00-10:00) → `/plan` → 미리보기에 ⚙️ 점검 4h 표시 → Apply → Schedule 행 Hours = 2, Status "Applied" → 확인 후 행 원복
+13. Payroll 탭 B2~D2가 월요일~일요일 2주로 표시되는지 (예: 2026-09-21 / 09-28 / 10-04)
 
-**완료 기준**: 11개 모두 통과. 실패한 항목은 로그 기반으로 코드 수정 후 재배포·재테스트.
+**완료 기준**: 13개 모두 통과. 실패한 항목은 로그 기반으로 코드 수정 후 재배포·재테스트.
 
 ---
 

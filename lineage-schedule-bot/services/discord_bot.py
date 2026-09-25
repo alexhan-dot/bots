@@ -54,6 +54,13 @@ COMMANDS = [
     {"name": "log", "description": "Free-text note — AI fills the form, you confirm", "options": [
         _o("text", S, "e.g. Reno 2h OT on Jjuni last night, boss fight", True)]},
     {"name": "week", "description": "Create next week's schedule rows now"},
+    {"name": "plan", "description": "Apply a schedule for a date range (Planner tab, or one rule here)", "options": [
+        _o("from", S, "First date, e.g. 10-01 (default: each Planner row's From)"),
+        _o("to", S, "Last date, e.g. 10-31 (default: each Planner row's To)"),
+        _o("account", S, "Only this account — or, with time/player, a one-off rule", auto=True),
+        _o("slot", I, "Shift slot (default 1)"), _o("days", S, "Daily, Mon-Fri, Weekends, Mon,Wed,Fri (default Daily)"),
+        _o("time", S, "Shift time, e.g. 16:00-24:00, 4pm-12am, OFF"), _o("player", S, "Player", auto=True),
+        _o("ground", S, "Hunting ground"), _o("reapply", 5, "Also re-apply Planner rows already applied")]},
 ]
 
 
@@ -120,6 +127,9 @@ async def _command(p, uid, name, bg) -> dict:
     if cmd == "week":
         bg.add_task(_run_week, p["token"])
         return {"type": 5, "data": {"flags": EPHEMERAL}}
+    if cmd == "plan":
+        bg.add_task(_run_plan_preview, p["token"], _plan_inputs(o), uid)
+        return {"type": 5, "data": {"flags": EPHEMERAL}}         # 시트 읽기 → 미리보기는 백그라운드
     if cmd == "log":
         bg.add_task(_run_log, p["token"], o.get("text", ""), uid)
         return {"type": 5, "data": {"flags": EPHEMERAL}}         # AI 파싱은 3초를 넘길 수 있어 먼저 "생각 중…"
@@ -135,6 +145,8 @@ def _component(p, uid, name, bg) -> dict:
         return {"type": 7, "data": {"content": "This request expired. Run the command again.", "embeds": [], "components": []}}
     if s.get("user_id") != uid:
         return _msg("Only the person who started this can confirm it.")
+    if s.get("flow") == "plan":
+        return _plan_component(p, action, sid, s, name, bg)
     draft = Draft.from_dict(s["draft"])
     if action == "no":
         state.delete(sid)
@@ -244,6 +256,89 @@ async def _run_log(token: str, text: str, uid: str):
     except Exception as e:
         log.exception("log parse failed")
         await _edit(token, {"content": f"❌ Couldn't read that note ({e}). Try the form commands: /ot /incentive /penalty /assign /off /extend"})
+
+
+# ── /plan (기간 스케줄) ─────────────────────────
+def _plan_inputs(o: dict) -> dict:
+    inline = None
+    if o.get("time") or o.get("player") or o.get("ground"):             # 명령에 규칙을 직접 적은 경우
+        inline = {"Account": o.get("account", ""), "Slot": o.get("slot") or 1, "Days": o.get("days") or "Daily",
+                  "Time": o.get("time", ""), "Player": o.get("player", ""), "Hunting Ground": o.get("ground", ""),
+                  "From": "", "To": ""}
+    return {"inline": inline, "lo": o.get("from"), "hi": o.get("to"),
+            "account": None if inline else o.get("account"), "reapply": bool(o.get("reapply"))}
+
+
+def _norm_range(inp: dict) -> dict:
+    inp = dict(inp)
+    for k in ("lo", "hi"):
+        if inp.get(k):
+            inp[k] = manager.parse_date(inp[k]) or inp[k]
+    return inp
+
+
+def _plan_embed(plan, inp: dict, sid: str | None, done=False) -> dict:
+    lines = [f"❌ {e}" for e in plan.errors] + [f"⚠️ {w}" for w in plan.warnings]
+    if plan.maint_shifts:
+        lines.append(f"⚙️ {plan.maint_shifts} shifts overlap maintenance ({plan.maint}) — "
+                     f"{plan.maint_hours:g}h not counted as work")
+    accounts = sorted({r.account for r in plan.rules})
+    fields = [("Dates", f"{plan.lo} ~ {plan.hi}" if plan.lo else "—"),
+              ("Rules", str(len(plan.rules))),
+              ("Accounts", ", ".join(accounts)[:1024] or "—"),
+              ("Updated shifts", str(plan.updates)), ("New shifts", str(plan.new)),
+              ("Already same", str(plan.unchanged))]
+    title = "Schedule plan — " + ("applied" if done else "confirm")
+    embed = {"title": title, "color": 0xE67E22 if plan.errors or plan.warnings else 0x2ECC71,
+             "description": "\n".join(lines)[:4000],
+             "fields": [{"name": k, "value": v, "inline": k != "Accounts"} for k, v in fields]}
+    rows = []
+    if sid and not done:
+        rows = [{"type": 1, "components": [
+            {"type": 2, "style": GREEN, "label": f"Apply {plan.changes} changes", "custom_id": f"ok|{sid}",
+             "disabled": plan.changes == 0},
+            {"type": 2, "style": RED, "label": "Cancel", "custom_id": f"no|{sid}"}]}]
+    return {"content": "", "embeds": [embed], "components": rows, "allowed_mentions": {"parse": []}}
+
+
+async def _run_plan_preview(token: str, inp: dict, uid: str):
+    from services import planner
+    try:
+        inp = _norm_range(inp)
+        plan, _, _ = planner.build(**inp)
+        sid = state.create(flow="plan", plan_inputs=inp, user_id=uid, status="preview") if plan.changes else None
+        await _edit(token, _plan_embed(plan, inp, sid))
+    except Exception as e:
+        log.exception("plan preview failed")
+        await _edit(token, {"content": f"❌ Couldn't build the plan: {e}"})
+
+
+def _plan_component(p, action, sid, s, name, bg) -> dict:
+    if action == "no":
+        state.delete(sid)
+        return {"type": 7, "data": {"content": "Cancelled.", "embeds": [], "components": []}}
+    if action == "ok":
+        if s.get("status") != "preview":
+            return _msg("Already applied.")
+        state.update(sid, status="saving")
+        bg.add_task(_run_plan_apply, p["token"], sid, s["plan_inputs"], name)
+        return {"type": 7, "data": {"content": "⏳ Applying…", "components": []}}
+    return _msg("Unknown action.")
+
+
+async def _run_plan_apply(token: str, sid: str, inp: dict, manager_name: str):
+    from services import planner
+    try:
+        plan = planner.apply(**inp, by=manager_name)
+        state.update(sid, status="done")
+        index.invalidate()
+        await _edit(token, {**_plan_embed(plan, inp, None, done=True), "content": "✅ Schedule updated."})
+        await _followup(token, f"🗓️ Plan applied {plan.lo}~{plan.hi}: {plan.updates} updated, {plan.new} new "
+                               f"({', '.join(sorted({r.account for r in plan.rules}))[:1500]}) · by {manager_name}")
+    except Exception as e:
+        log.exception("plan apply failed")
+        state.update(sid, status="preview")
+        await _edit(token, {"content": f"❌ Not applied: {e}"})
 
 
 async def _run_week(token: str):

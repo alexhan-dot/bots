@@ -14,7 +14,9 @@ from google.auth import default
 from services import clock
 from services.layout import (SCHEDULE_TAB, ACCOUNTS_TAB, SCHEDULE_COLS, METRIC_COLS, ACCOUNT_COLS,
                              DAYS, BOARDS, schedule_formulas, board_formulas,
-                             TL_TAB, TL_BOARD, TL_COLS, tl_formulas, tl_board_formulas,
+                             TL_TAB, TL_BOARD, TL_COLS, tl_formulas, tl_board_formulas, pay_week_formula,
+                             SETTINGS_TAB, SETTINGS_ROWS, PLANNER_TAB, PLANNER_COLS, PLANNER_EXAMPLE,
+                             PAY_ANCHOR, PAYROLL_NOTE,
                              PAYROLL_TAB, payroll_formulas, LOG_TABS, week_formula, SPILL_SEEDS)
 
 SHEET_ID = os.environ["SHEET_ID"]
@@ -56,9 +58,9 @@ def ensure_tabs():
         ws = book.add_worksheet(SCHEDULE_TAB, rows=2000, cols=len(SCHEDULE_COLS) + 4)
         ws.update(values=[SCHEDULE_COLS + [h for h, _ in schedule_formulas().values()]], range_name="A1")
     # 계산 수식은 매 기동 시 열린 범위(A2:A)로 다시 씀 — xlsx 이관본의 제한 범위 해제 + 누가 지워도 복구
+    _ensure_settings(book, titles)
     ws = book.worksheet(SCHEDULE_TAB)
-    ws.batch_update([{"range": f"{c}2", "values": [[f]]} for c, (_, f) in schedule_formulas().items()],
-                    value_input_option="USER_ENTERED")
+    _write_calc_cols(ws, schedule_formulas())
     for title, type_ in BOARDS.items():
         if title in titles:
             _write_formulas(book.worksheet(title), board_formulas(type_))
@@ -67,20 +69,52 @@ def ensure_tabs():
         if title not in titles:
             book.add_worksheet(title, rows=1000, cols=len(cols) + 1).update(
                 values=[cols + ["Week"]], range_name="A1")
-        _write_formulas(book.worksheet(title), {f"{chr(65 + len(cols))}2": week_formula()})
+        wk, pw = chr(65 + len(cols)), chr(66 + len(cols))
+        _write_calc_cols(book.worksheet(title), {wk: ("Week", week_formula()), pw: ("Pay Week", pay_week_formula())})
     if TL_TAB in titles:
-        _write_formulas(book.worksheet(TL_TAB), {f"{c}2": f for c, (_, f) in tl_formulas().items()})
+        _write_calc_cols(book.worksheet(TL_TAB), tl_formulas())
     if TL_BOARD in titles:
         _write_formulas(book.worksheet(TL_BOARD), tl_board_formulas())
     if PAYROLL_TAB in titles:
-        # B2(보고 있는 기간)는 사람이 바꾼 값을 유지
-        _write_formulas(book.worksheet(PAYROLL_TAB), {k: v for k, v in payroll_formulas().items() if k != "B2"})
+        _ensure_payroll(book.worksheet(PAYROLL_TAB))
     ws = book.worksheet(SCHEDULE_TAB)
     if not ws.acell("A2").value:
         with open(os.path.join(DATA, "schedule_seed.csv"), encoding="utf-8") as f:
             rows = [_typed(r) for r in list(csv.reader(f))[1:]]
         if rows: ws.append_rows(rows, table_range="A1:O1")
     load_master(force=True)
+
+def _write_calc_cols(ws, cols: dict):
+    """계산 열: 1행 헤더 + 2행 ARRAYFORMULA. 열이 모자라면 늘림"""
+    need = max(ord(c) - 64 for c in cols)
+    if ws.col_count < need:
+        ws.add_cols(need - ws.col_count)
+    data = []
+    for c, (head, f) in cols.items():
+        data += [{"range": f"{c}1", "values": [[head]]}, {"range": f"{c}2", "values": [[f]]}]
+    ws.batch_update(data, value_input_option="USER_ENTERED")
+
+def _ensure_settings(book, titles):
+    """Settings 탭(정기점검 시간)과 Planner 탭이 없으면 만듦 — 값이 이미 있으면 건드리지 않음"""
+    if SETTINGS_TAB not in titles:
+        book.add_worksheet(SETTINGS_TAB, rows=20, cols=3).update(values=SETTINGS_ROWS, range_name="A1")
+    if PLANNER_TAB not in titles:
+        book.add_worksheet(PLANNER_TAB, rows=500, cols=len(PLANNER_COLS)).update(
+            values=[PLANNER_COLS] + PLANNER_EXAMPLE, range_name="A1")
+
+def _ensure_payroll(ws):
+    """Payroll 수식. B2(보고 있는 기간)는 사람이 날짜를 넣었으면 유지, G2(기준일)는 월요일이어야 함"""
+    f = payroll_formulas()
+    anchor = _norm_date(ws.acell("G2").value or "")
+    try: monday = datetime.date.fromisoformat(anchor).weekday() == 0
+    except ValueError: monday = False
+    extra = {} if monday else {"G2": PAY_ANCHOR}
+    b2 = ws.acell("B2", value_render_option="FORMULA").value or ""
+    if b2 and not str(b2).startswith("="):          # 사람이 입력한 기간 시작일 → 유지
+        f.pop("B2")
+    f.update(extra)
+    f["H2"] = PAYROLL_NOTE
+    _write_formulas(ws, f)
 
 def _write_formulas(ws, cells: dict):
     if ws.title in SPILL_SEEDS:                       # xlsx 이관본의 값 목록을 지워야 A5 수식이 펼쳐짐

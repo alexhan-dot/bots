@@ -20,7 +20,8 @@ DATA = os.path.join(HERE, "..", "data")
 sys.path.insert(0, os.path.join(HERE, ".."))
 from services.layout import (SCHEDULE_COLS, ACCOUNT_COLS, DAYS, schedule_formulas, board_formulas,  # noqa: E402
                              TL_TAB, TL_BOARD, TL_COLS, tl_formulas, tl_board_formulas,
-                             PAYROLL_TAB, PAYROLL_HISTORY_TAB, payroll_formulas, week_formula,
+                             PAYROLL_TAB, PAYROLL_HISTORY_TAB, payroll_formulas, week_formula, pay_week_formula,
+                             SETTINGS_TAB, SETTINGS_ROWS, PLANNER_TAB, PLANNER_COLS, PLANNER_EXAMPLE, PAYROLL_NOTE,
                              PAYROLL_HEADERS, PAY_ANCHOR,
                              OVERTIME_TAB, OVERTIME_COLS, INCENTIVE_TAB, INCENTIVE_COLS,
                              PENALTY_TAB, PENALTY_COLS, PERF_PAY_TAB)
@@ -342,11 +343,10 @@ def build(src_path, tab, out_path, with_schedule=True):
     pay = wb.create_sheet(PAYROLL_TAB)
     pay["A1"] = "PAYROLL — 2-week pay period (auto: Schedule + TL hours + OT − Death Penalty, Incentives)"
     pay["A1"].font = Font(bold=True, size=14)
-    pay["A2"] = "Period (Sun):"; pay["A2"].font = Font(bold=True)
+    pay["A2"] = "Period (Mon):"; pay["A2"].font = Font(bold=True)
     pay["F2"] = "Anchor:"; pay["F2"].font = Font(bold=True)
     pay["G2"] = PAY_ANCHOR
-    pay["H2"] = ("← B2 = 기간 시작 일요일 (기본: 오늘이 속한 기간, 다른 기간은 날짜 직접 입력). C2 = 2주차, D2 = 기간 끝. "
-                 "G2 = 2주 주기 기준일 (W37 시작).")
+    pay["H2"] = PAYROLL_NOTE
     pay["H2"].font = Font(italic=True, color="7F7F7F")
     pay["A3"] = ("Payable Hrs = Base(플레이어 시프트 + TL 근무) + OT − Death Penalty.  Incentives = Incentives 탭 금액 합계 (매니저 입력).")
     pay["A3"].font = Font(italic=True, color="7F7F7F")
@@ -389,12 +389,26 @@ def build(src_path, tab, out_path, with_schedule=True):
         ws = wb.create_sheet(title)
         header(ws, cols)
         wcol = openpyxl.utils.get_column_letter(len(cols) + 1)
-        c = ws[f"{wcol}1"]; c.value = "Week"; c.fill = PatternFill("solid", fgColor="7F7F7F"); c.font = HDR_FONT
+        pcol = openpyxl.utils.get_column_letter(len(cols) + 2)
+        for col, h in ((wcol, "Week"), (pcol, "Pay Week")):
+            c = ws[f"{col}1"]; c.value = h; c.fill = PatternFill("solid", fgColor="7F7F7F"); c.font = HDR_FONT
         for r in data:
             ws.append([r.get(k) if r.get(k) not in ("", None) else None for k in cols])
         ws[f"{wcol}2"] = week_formula(XLSX_LAST_ROW)          # 데이터 뒤에 써야 2행부터 데이터가 들어감
+        ws[f"{pcol}2"] = pay_week_formula(XLSX_LAST_ROW)
         ws.freeze_panes = "A2"; ws.auto_filter.ref = f"A1:{openpyxl.utils.get_column_letter(len(cols))}1"
         for i in range(len(cols)): ws.column_dimensions[openpyxl.utils.get_column_letter(i + 1)].width = 14
+
+    # ── Settings (정기점검) / Planner (기간 스케줄 입력) ──
+    st = wb.create_sheet(SETTINGS_TAB)
+    for r in SETTINGS_ROWS: st.append(r)
+    for c in st[1]: c.fill = HDR_FILL; c.font = HDR_FONT
+    for col, w in zip("ABC", [20, 10, 60]): st.column_dimensions[col].width = w
+    pl = wb.create_sheet(PLANNER_TAB, index=1)
+    header(pl, PLANNER_COLS)
+    for r in PLANNER_EXAMPLE: pl.append(r)
+    pl.freeze_panes = "A2"
+    for col, w in zip("ABCDEFGHI", [16, 5, 14, 13, 16, 18, 11, 11, 60]): pl.column_dimensions[col].width = w
 
     # ── Performance Pay: 기준표 그대로 복사 (값 + 병합) ──
     pp_src = src["performance pay"]; pp = wb.create_sheet(PERF_PAY_TAB)
@@ -423,11 +437,13 @@ def build(src_path, tab, out_path, with_schedule=True):
         ("탭 구성", True),
         ("• Client Board / Farming Board — 고객 계정 / 농장 계정 주간 보기 (수식, 직접 수정 금지). B2에 주 시작 일요일 입력하면 다른 주 조회", False),
         ("• Schedule — 원장. 1행 = 계정 × 날짜 × 시프트(Slot). 시간·플레이어·사냥터·KPI·골드·물약을 여기서 입력/수정 (필터 사용)", False),
-        ("   - Time: HH:MM-HH:MM 또는 OFF.  Hours/Week/Key/Display(P~S열)는 자동 계산 — 건드리지 말 것", False),
+        ("   - Time: HH:MM-HH:MM 또는 OFF.  Hours/Week/Key/Display/Maint Hrs/Pay Week(P~U열)는 자동 계산 — 건드리지 말 것", False),
+        ("• Planner — 기간 스케줄 입력 (예: 10/1~10/31 평일 09:00-17:00 Cejay). 행을 채우고 디스코드 /plan → 미리보기 → Apply", False),
+        ("• Settings — 정기점검 요일·시간 (기본 수요일 05:00-09:00). 겹치는 시프트 시간은 Hours에서 자동 차감", False),
         ("• Accounts — 계정 마스터. Type=Client(고객) / Farming(농장), Status=Active/Paused/Inactive, Customer=고객명, SalesRep=담당 영업", False),
         ("• TL Board / TL Schedule — 팀 리더 근무표 (Board = 주간 보기, Schedule = 입력: 근무시간·출근). TL OT는 Overtime 탭 (Role=TL). 이관: Week 16~39 + 다음 주 초안", False),
         ("• Overtime / Incentives / Death Penalty — 매니저 기록 로그 (디스코드 봇 /ot /incentive /penalty 로 입력, 직접 입력도 가능). Performance Pay — 인센티브 기준표", False),
-        ("• Payroll — 2주 단위(W37-38, W39-40 …) 직원별 1·2주차 근무시간, OT, 페널티, 지급 시간, 인센티브 합계, 담당 캐릭터 자동 집계. B2에 기간 시작일 입력하면 과거 기간 조회 / Payroll History — 기존 수기 Payroll(W19·20·33·34)", False),
+        ("• Payroll — 2주 단위(월~일 × 2, 예: 9/21~10/4) 직원별 1·2주차 근무시간, OT, 페널티, 지급 시간, 인센티브 합계, 담당 캐릭터 자동 집계. B2에 기간 시작일 입력하면 과거 기간 조회 / Payroll History — 기존 수기 Payroll(W19·20·33·34)", False),
         ("• Glossary — 봇 용어 사전 / EventLog — 봇 기록(질문·재접속·정보)", False),
         ("", False),
         ("운영 규칙", True),

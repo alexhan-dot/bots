@@ -26,8 +26,10 @@
 | `Schedule` | 원장. 1행 = 계정 × 날짜 × 시프트(Slot). A:O 입력, P:S(Hours/Week/Key/Display) 자동 계산 | 사람 + 봇 |
 | `Accounts` | 계정 마스터. **Type = Client(고객) / Farming(농장)**, Status = Active/Paused/Inactive, Customer, SalesRep | 사람 + 봇 |
 | `TL Board` / `TL Schedule` | 팀 리더 근무표 (주간 보기 / 입력: 근무시간·출근). Week 16~39 이관. J열 Hours = "8am-4pm" 형식에서 자동 계산 (OFF·CANCEL OFF·Absent = 0) | 사람 (+ `/week` 복사) |
-| `Payroll` | **2주 단위 급여 기간** 직원별 집계: Week 1/2 Hrs(플레이어 시프트 + TL 근무) · OT · Death Penalty 차감 · Payable Hrs · Incentives(매니저 입력 금액 합계) · Shifts · Characters. B2 = 기간 시작 일요일(기본: 오늘이 속한 기간, 기준일 G2 = 2026-09-06), 다른 기간은 B2에 날짜 입력 | 보기 전용 (수식) |
+| `Payroll` | **2주 단위 급여 기간** 직원별 집계: Week 1/2 Hrs(플레이어 시프트 + TL 근무) · OT · Death Penalty 차감 · Payable Hrs · Incentives(매니저 입력 금액 합계) · Shifts · Characters. **급여 기간 = 월~일 × 2주** (예: 9/21~10/4). B2 = 기간 시작 월요일(기본: 오늘이 속한 기간, 기준 월요일 G2 = 2026-09-07), 다른 기간은 B2에 월요일 날짜 입력. 각 탭의 `Pay Week` 열(월요일)로 합산 | 보기 전용 (수식) |
 | `Payroll History` | 기존 수기 Payroll (W19·20·33·34) | 기록 |
+| `Planner` | **기간 스케줄 입력** — 1행 = 반복 규칙 (Account · Slot · Days · Time · Player · Hunting Ground · From · To). 디스코드 `/plan` 으로 미리보기 → Apply 하면 Schedule에 반영, Status에 "Applied" 기록 | 매니저 |
+| `Settings` | 정기점검 요일·시작·끝 (기본 **수요일 05:00-09:00**). Schedule `Maint Hrs`(T열)가 겹친 시간을 계산해 Hours에서 자동 차감, 보드 셀에 "⚙ maint -4h" 표시 | 사람 |
 | `Overtime` | OT 로그 (직원·계정·시프트·OT 시간·사유·매니저). TL OT 이관분 포함 | 디스코드 봇 + 사람 |
 | `Incentives` | 인센티브 로그 | 디스코드 봇 + 사람 |
 | `Death Penalty` | 데스 페널티 로그 (7개 탭 → 1개로 통합, 중복 제거) | 디스코드 봇 + 사람 |
@@ -39,7 +41,7 @@
 xlsx 가져오기는 목록 수식(SORT/UNIQUE/FILTER)을 계산하지 못해 Board·Payroll의 A열 목록은 값으로 들어가 있음 → **봇이 처음 기동할 때 동적 수식으로 바뀜** (그 전까지는 새 직원·계정이 목록에 자동 추가되지 않음).
 합계 열(Hours·OT·Payroll)은 행마다 수식 (SUMIFS 는 ARRAYFORMULA 안에서 가져오기 시 첫 값만 계산되기 때문).
 
-**급여 계산**: `Payable Hrs = Base(Week1 + Week2) + OT − Penalty`. 인센티브는 매니저가 `Incentives` 탭(또는 `/incentive`)에 금액을 직접 입력 → Payroll H열에 기간 합계. 급여 기간은 2주(W37-38, W39-40, …) — `layout.PAY_ANCHOR` 로 기준일 변경.
+**급여 계산**: `Payable Hrs = Base(Week1 + Week2) + OT − Penalty`. 인센티브는 매니저가 `Incentives` 탭(또는 `/incentive`)에 금액을 직접 입력 → Payroll H열에 기간 합계. 급여 기간은 월~일 2주 — 기준 월요일은 Payroll G2 (`layout.PAY_ANCHOR`). 봇 기동 시 G2가 월요일이 아니면 기본값으로 고침.
 
 - 주간 탭을 매주 새로 만들지 않음. 새 주 첫 작업(또는 `/week` 명령) 때 직전 주의 **시간·사냥터를 복사**, 플레이어·실적은 비움 (Active 계정만)
 - 고객↔농장 이동 = `Accounts`의 Type 변경 (다음 주 생성분부터 반영)
@@ -88,6 +90,21 @@ xlsx 가져오기는 목록 수식(SORT/UNIQUE/FILTER)을 계산하지 못해 Bo
 | `/schedule [account] [staff] [date]` | 조회만 | |
 | `/log text` | 자유 입력 → AI가 양식으로 변환 → 같은 확인 단계 | `/log Reno 2h OT on Jjuni last night` |
 | `/week` | 다음 주 Schedule + TL 근무표 생성 | |
+| `/plan [from] [to] [account]` | Planner 탭의 새 규칙을 Schedule에 반영 (미리보기 → Apply) | `/plan from:10-01 to:10-31` |
+| `/plan account time/player [days] [slot] [ground] from to` | 한 줄 규칙을 바로 반영 (Planner 탭 없이) | `/plan account:ADA slot:1 days:Mon-Fri time:9am-5pm player:Cejay from:10-01 to:10-31` |
+
+**한 달치 스케줄 입력 (Planner)** — 매니저가 `Planner` 탭에 규칙을 적고 `/plan` 실행:
+
+| Account | Slot | Days | Time | Player | Hunting Ground | From | To |
+|---|---|---|---|---|---|---|---|
+| ADA | 1 | Mon-Fri | 9am-5pm | Cejay | | 2026-10-01 | 2026-10-31 |
+| ADA | 1 | Weekends | 9am-5pm | Kim Carl | | 2026-10-01 | 2026-10-31 |
+| Alex | 3 | Daily | 12am-8am | Raymond | Ivory Tower 4~5 | 2026-10-01 | 2026-10-31 |
+
+- Days: `Daily`, `Weekdays`, `Weekends`, `Mon-Fri`, `Sat-Mon`, `Mon,Wed,Fri` · Time: `09:00-17:00`, `9am-5pm`, `12am-8am`(=24:00-08:00), `OFF`
+- Player / Hunting Ground / Time 빈 칸 = 기존 값 유지 (예: 플레이어만 한 달 교체). 아래 줄이 위 줄을 덮어씀
+- 미리보기에 표시: 바뀌는/새 시프트 수, 읽지 못한 줄(❌), 같은 플레이어 시간 겹침(⚠️), 정기점검과 겹쳐 빠지는 시간(⚙️)
+- 적용된 줄은 Status에 `Applied …` → 다음 `/plan` 때 건너뜀 (`reapply:true` 로 다시 적용). 한 규칙 최대 62일
 
 **속도 설계** — 디스코드는 3초 안에 응답해야 하고, 매니저가 기다리지 않아야 함:
 - 스케줄 찾기는 AI가 아니라 **메모리 인덱스** (Accounts·Schedule 최근 3주~향후 2주·TL). 조회/자동완성 1ms 미만, 60초마다 백그라운드 갱신
