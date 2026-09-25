@@ -22,6 +22,12 @@
 
 | 탭 | 용도 | 편집 |
 |---|---|---|
+| `Today` (맨 앞) | 오늘·내일 시프트만 시간순 (OFF·플레이어 없는 파밍 제외), 빈 자리 수 | 보기 전용 (수식) |
+| `Schedule Archive` | 지난 시프트 — 봇이 매일 Schedule 에서 옮김. `Schedule` 은 오늘부터만, 날짜순 (오늘이 맨 위) | 기록 |
+| `All Shifts` (숨김) | Schedule + Archive 합본 — Board·Payroll 수식이 이 탭을 봄 | 자동 |
+| `Shift Reports` | 플레이어 `/shot` 시작·종료 스크린샷 → 레벨·EXP %·아데나, 획득량 (끝나면 Schedule KPI·Gold 에도) | 봇 |
+| `Staff` | 디스코드 계정 ↔ 스케줄 이름 (`/iam`) | 봇 + 사람 |
+| `Confirmations` | 일별·주별 매니저 컨펌 기록 | 봇 |
 | `Client Board` / `Farming Board` | 고객 / 농장 계정 주간 그리드 (셀 = 시간⏎플레이어⏎@사냥터). B2에 일요일 날짜 넣으면 다른 주 조회 | 보기 전용 (수식) |
 | `Schedule` | 원장. 1행 = 계정 × 날짜 × 시프트(Slot). A:O 입력, P:S(Hours/Week/Key/Display) 자동 계산 | 사람 + 봇 |
 | `Accounts` | 계정 마스터. **Type = Client(고객) / Farming(농장)**, Status = Active/Paused/Inactive, Customer, SalesRep | 사람 + 봇 |
@@ -90,6 +96,8 @@ xlsx 가져오기는 목록 수식(SORT/UNIQUE/FILTER)을 계산하지 못해 Bo
 | `/schedule [account] [staff] [date]` | 조회만 (인자 없으면 오늘 전체, 빈 자리 먼저) | |
 | `/log text` | 자유 입력 → AI가 양식으로 변환 → 같은 확인 단계 | `/log Reno 2h OT on Jjuni last night` |
 | `/week` | 다음 주 Schedule + TL 근무표 생성 | |
+| `/check kind:day\|week [date]` | 컨펌 카드 바로 올리기 (#schedule-confirm) | |
+| `/iam` `/shot` `/myshifts` | 플레이어용 (역할 불필요) | `/shot image:<스크린샷>` |
 | `/plan [from] [to] [account]` | Planner 탭의 새 규칙을 Schedule에 반영 (미리보기 → Apply) | `/plan from:10-01 to:10-31` |
 | `/plan account time/player [days] [slot] [ground] from to` | 한 줄 규칙을 바로 반영 (Planner 탭 없이) | `/plan account:ADA slot:1 days:Mon-Fri time:9am-5pm player:Cejay from:10-01 to:10-31` |
 
@@ -117,6 +125,12 @@ xlsx 가져오기는 목록 수식(SORT/UNIQUE/FILTER)을 계산하지 못해 Bo
 - `/` 입력 → 명령 선택 → 이름 칸에 두세 글자 → 후보에 **그날 시프트가 같이 표시** (`Reno · ADA #1 09:00-17:00`) → 고르면 끝. 날짜 기본값 = 오늘
 - 미리보기·확인 창은 **본인에게만 보임**, 저장 기록은 `#bot-log` 에 한 줄
 - `/schedule` (인자 없음) = 오늘 전체 보드: **플레이어 빈 시프트가 맨 위**, 고객/농장/TL 순
+
+**슬롯 규칙** — 슬롯은 정하지 않아도 됨. 요청 시간이 **8시간을 넘으면** 8시간씩 나눠 추가 슬롯으로 (다른 플레이어 지정용). 자정 넘어 시작하는 조각은 다음 날짜로.
+
+**다음 주 자동 생성 + 컨펌** — Settings 의 Weekly Confirm Day/Time(기본 토 12:00)에 다음 주를 만듦: 시간·사냥터 복사, **고객 계정은 최근 플레이어 유지**(같은 계정·슬롯·요일, 3주 이내), 농장은 비움, OFF 는 복사 안 함. `#schedule-confirm` 에 주간 카드 → **Confirm week**. 매일 Daily Confirm Time(기본 07:00)에 오늘 카드(오전 시프트부터, 빈 자리 맨 위) → **Confirm day**. 미컨펌이면 Reminder After 시간 뒤 한 번 더 알림. `/check` 로 바로 올리기.
+
+**플레이어 스크린샷** (`#shift-reports`) — `/iam name:` 한 번 → 시프트 시작·끝에 `/shot image:` → AI 가 레벨·EXP %·아데나 읽음 → 확인(틀리면 Fix) → 기록. 끝에서 EXP 획득 % = (끝 레벨−시작 레벨)×100 + 끝% − 시작%, 아데나 획득 = 끝 − 시작. `/myshifts` 내 3일 스케줄. 플레이어는 Manager 역할 없이 이 명령만 사용 가능.
 
 **텔레그램 → 디스코드 → 시트 (한 번에)**
 1. 영업자가 텔레그램에 평소처럼 요청 → AI가 해석 → 영업자 ✅ → **시트 즉시 반영**

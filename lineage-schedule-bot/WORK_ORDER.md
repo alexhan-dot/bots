@@ -46,6 +46,9 @@ env.yaml.example / deploy.sh / Dockerfile / requirements.txt / README.md
 - 고객(Client)/농장(Farming) 분리 구조. 탭: `Client Board`, `Farming Board`, `Schedule`, `Accounts`, `Planner`, `Settings`, `Payroll`, `Glossary`, `EventLog` 등 (README.md 참고)
 - **급여 = 월~일 기준 2주 단위** (기준 월요일 Payroll!G2 = 2026-09-07 → 9/21~10/4, 10/5~10/18 …). 보드의 주간 보기(일~토)와 별개로 각 탭 `Pay Week`(월요일) 열로 합산
 - **정기점검**: Settings 탭 (기본 수요일 05:00-09:00) — 겹치는 시프트 시간은 Hours에서 자동 차감
+- 봇 기동 시: Today(맨 앞)·Schedule Archive·All Shifts(숨김) 탭, 지난 시프트 보관 + 날짜순 정렬 (이후 매일 자동)
+- 일별·주별 컨펌 알림은 앱 안 스케줄러 (Settings 시각, Firestore 로 중복 방지) → `#schedule-confirm`
+- 플레이어 스크린샷 → `Shift Reports` (Claude 비전, DISCORD_AI_MODEL)
 - 봇 기동(ensure_tabs) 시: Settings·Planner 탭 생성, Schedule T·U / TL K / 로그 탭 Pay Week 열 추가, Payroll 기준일을 월요일로 교정
 - 기존 수기 시트(1dwv88…)는 봇이 사용하지 않음 — **서비스계정에 공유하지 말 것** (Login Credentials 탭 포함)
 - Schedule 데이터는 봇 첫 기동 때 `data/schedule_seed.csv`(Week 39 이관분 + Week 40)로 자동 채워짐
@@ -180,8 +183,11 @@ bash deploy.sh            # REGION 환경변수로 리전 변경 가능: REGION=
 11. 매니저 → `/log <근무자> 1h OT today test` → 같은 미리보기가 뜨는지 (AI) → Cancel
 12. 매니저 → Planner 탭에 테스트 규칙 1줄(다음 주 수요일 하루, 04:00-10:00) → `/plan` → 미리보기에 ⚙️ 점검 4h 표시 → Apply → Schedule 행 Hours = 2, Status "Applied" → 확인 후 행 원복
 13. Payroll 탭 B2~D2가 월요일~일요일 2주로 표시되는지 (예: 2026-09-21 / 09-28 / 10-04)
+14. `/check kind:day` → `#schedule-confirm` 카드 → Confirm → Confirmations 탭 기록
+15. 플레이어 계정으로 `/iam` → `/shot`(시작) → Confirm → `/shot`(끝) → 획득 EXP·아데나 표시, Shift Reports·Schedule KPI/Gold 기록
+16. 시트 전체 탭에 #REF!/#ERROR!/#N/A 가 없는지 (봇 재시작 후)
 
-**완료 기준**: 13개 모두 통과. 실패한 항목은 로그 기반으로 코드 수정 후 재배포·재테스트.
+**완료 기준**: 16개 모두 통과. 실패한 항목은 로그 기반으로 코드 수정 후 재배포·재테스트.
 
 ---
 

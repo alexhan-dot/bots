@@ -118,6 +118,10 @@ def board_formulas(type_: str, last_row: int | None = None) -> dict:
     return f
 
 
+# 보드 B2: 기본 = 이번 주 일요일 (사람이 날짜를 넣으면 그 주, 봇 재시작 때 이번 주로 돌아옴)
+WEEK_START_FORMULA = '=TEXT(TODAY()-WEEKDAY(TODAY())+1,"yyyy-mm-dd")'
+
+
 def all_shifts_formula() -> str:
     """All Shifts!A2 — Schedule + Archive 를 한 목록으로 (계산 열 P:U 포함)"""
     return (f"=IFERROR(FILTER(VSTACK({SCHEDULE_TAB}!A2:U,'{ARCHIVE_TAB}'!A2:U),"
@@ -178,7 +182,7 @@ def tl_board_formulas(last_row: int | None = None) -> dict:
     n = "" if last_row is None else str(last_row)
     r0, rl = BOARD_FIRST_ROW, BOARD_LAST_ROW
     t = f"'{TL_TAB}'"
-    f = {"A5": f'=IFERROR(SORT(UNIQUE(FILTER({t}!C2:C{n},{t}!I2:I{n}=$B$2))),"")'}
+    f = {"A5": f'=IFERROR(SORT(UNIQUE(FILTER({t}!C2:C{n},{t}!G2:G{n}=$B$2))),"")'}   # G = Week
     for j in range(7):
         col = chr(ord("B") + j)
         f[f"{col}4"] = f'=TEXT(DATEVALUE($B$2)+{j},"yyyy-mm-dd")'

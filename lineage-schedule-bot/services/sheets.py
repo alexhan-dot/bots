@@ -13,7 +13,7 @@ import gspread
 from google.auth import default
 from services import clock, shiftutil
 from services.layout import (SCHEDULE_TAB, ARCHIVE_TAB, ALL_TAB, TODAY_TAB, TODAY_COLS, all_shifts_formula,
-                             today_formulas, ACCOUNTS_TAB, SCHEDULE_COLS, METRIC_COLS, ACCOUNT_COLS,
+                             today_formulas, WEEK_START_FORMULA, ACCOUNTS_TAB, SCHEDULE_COLS, METRIC_COLS, ACCOUNT_COLS,
                              DAYS, BOARDS, schedule_formulas, board_formulas,
                              TL_TAB, TL_BOARD, TL_COLS, tl_formulas, tl_board_formulas, pay_week_formula,
                              SETTINGS_TAB, SETTINGS_ROWS, PLANNER_TAB, PLANNER_COLS, PLANNER_EXAMPLE,
@@ -69,7 +69,7 @@ def ensure_tabs():
     _ensure_views(book, titles)
     for title, type_ in BOARDS.items():
         if title in titles:
-            _write_formulas(book.worksheet(title), board_formulas(type_))
+            _write_formulas(book.worksheet(title), {"B2": WEEK_START_FORMULA, **board_formulas(type_)})
     # 매니저 기록 탭(Overtime/Incentives/Death Penalty)은 없으면 헤더만 만들어 둠 (디스코드 봇이 append)
     for title, cols in LOG_TABS.items():
         if title not in titles:
@@ -80,7 +80,7 @@ def ensure_tabs():
     if TL_TAB in titles:
         _write_calc_cols(book.worksheet(TL_TAB), tl_formulas())
     if TL_BOARD in titles:
-        _write_formulas(book.worksheet(TL_BOARD), tl_board_formulas())
+        _write_formulas(book.worksheet(TL_BOARD), {"B2": WEEK_START_FORMULA, **tl_board_formulas()})
     if PAYROLL_TAB in titles:
         _ensure_payroll(book.worksheet(PAYROLL_TAB))
     ws = book.worksheet(SCHEDULE_TAB)
