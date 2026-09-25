@@ -31,6 +31,19 @@ def link(discord_id: str, discord_name: str, name: str, role: str = "Player"):
     index.invalidate()
 
 
+def register_unknown(discord_id: str, discord_name: str):
+    """연결 안 된 디스코드 사용자 → Staff 탭에 Name 비운 줄 추가 (매니저가 이름만 채우면 됨)"""
+    book = sheets._book()
+    try:
+        ws = book.worksheet(STAFF_TAB)
+    except Exception:
+        ws = book.add_worksheet(STAFF_TAB, rows=300, cols=len(STAFF_COLS))
+        ws.update(values=[STAFF_COLS], range_name="A1")
+    if any(len(r) > 1 and str(r[1]) == str(discord_id) for r in ws.get("A2:B")):
+        return
+    ws.append_rows([["", str(discord_id), discord_name, "Player", ""]], value_input_option="RAW", table_range="A1")
+
+
 # ── 시프트 찾기 ───────────────────────────────
 def _window(s) -> tuple[datetime.datetime, datetime.datetime] | None:
     sp = shiftutil.span(s.time)
@@ -104,6 +117,18 @@ def gains(start: dict, end: dict) -> tuple[float | None, int | None]:
     sa, ea = _num(start.get("adena")), _num(end.get("adena"))
     adena = int(ea - sa) if sa is not None and ea is not None and sa >= 0 and ea >= 0 else None
     return exp, adena
+
+
+def clear(shift: dict, player: str, kind: str):
+    """잘못 넣은 시작/끝 기록 지우기 (플레이어가 '시작이 아니라 끝' 이라고 바꿀 때)"""
+    row, _ = find_report(shift, player)
+    if not row:
+        return
+    pre = "Start" if kind == "start" else "End"
+    cols = [f"{pre} At", f"{pre} Lv", f"{pre} EXP %", f"{pre} Adena", f"{pre} Shot", "EXP Gained %", "Adena Gained"]
+    _ws().batch_update([{"range": f"{chr(65 + C[k])}{row}", "values": [[""]]} for k in cols])
+    if kind == "end":                                   # 끝 기록으로 넣었던 획득량도 Schedule 에서 지움
+        sheets.update_shift_anywhere(shift["date"], shift["account"], int(shift["slot"]), KPI="", Gold="")
 
 
 def save(shift: dict, player: str, kind: str, vals: dict, shot_url: str, discord_id: str) -> dict:

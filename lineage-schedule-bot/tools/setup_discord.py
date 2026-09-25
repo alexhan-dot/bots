@@ -48,11 +48,12 @@ Sales requests from Telegram arrive in #sales-requests → **✅ Confirm** / **�
 
 PLAYER_GUIDE = """**How to report your shift** (players)
 
-1️⃣ Once: `/iam name:<your name>` — pick your name from the list.
-2️⃣ At the **start** of your shift: `/shot` → attach a screenshot showing your **level + EXP %** and your **inventory with Adena**.
-3️⃣ At the **end** of your shift: `/shot` again with the same kind of screenshot.
+1️⃣ At the **start** of your shift: `/shot` → attach a screenshot showing your **level + EXP %** and your **inventory with Adena**.
+2️⃣ At the **end** of your shift: `/shot` again with the same kind of screenshot.
 
-The bot reads Level / EXP % / Adena → check the numbers → **Confirm** (or **Fix numbers** if something is wrong).
+The bot finds your character from the schedule, reads Level / EXP % / Adena and records it right away.
+Wrong number? Press **Fix numbers**. Sent the end as the start? Press **It was the end**.
+First time: if your Discord name isn't your schedule name, a manager links you in the Staff tab.
 At the end it shows what you gained this shift (EXP % and Adena). `/myshifts` shows your next 3 days."""
 
 
