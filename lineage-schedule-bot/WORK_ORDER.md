@@ -153,7 +153,7 @@ bash deploy.sh            # REGION 환경변수로 리전 변경 가능: REGION=
 ```
 - 첫 배포 5~8분. 실패 시 로그 읽고 원인 수정 (흔한 원인: API 미활성, SA 권한, Dockerfile ffmpeg 설치 실패)
 - deploy.sh 가 자동으로: 텔레그램 웹훅·메뉴(/start /week /glossary) 등록, **디스코드 Interactions Endpoint 등록**
-- `curl $URL/healthz` → `{"ok":true}`
+- `curl $URL/health` → `{"ok":true}` (`/healthz` 는 Cloud Run 이 가로챔)
 - 대표·영업자가 새 봇에 `/start` → Chat ID 확인 → env.yaml 에 넣고 `bash deploy.sh` 한 번 더 (4-1의 4·5)
 - 디스코드 `#manager-desk` 에서 `/schedule` → 오늘 보드가 뜨면 연결 완료
 

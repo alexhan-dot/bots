@@ -57,6 +57,7 @@ async def discord_interactions(req: Request, bg: BackgroundTasks):
         return {"type": 4, "data": {"content": f"❌ Error: {type(e).__name__}", "flags": 64}}
 
 
+@app.get("/health")                 # Cloud Run 은 z 로 끝나는 경로(/healthz)를 가로채므로 /health 사용
 @app.get("/healthz")
 def healthz():
     return {"ok": True}
