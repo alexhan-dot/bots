@@ -249,7 +249,7 @@ def commit(d: Draft, manager: str, source: str = "discord") -> str:
                       "extend": {"Time": f.get("new_time")}}[d.kind]
             if not sheets.update_shift_row(s["row"], s["date"], s["account"], s["slot"], **fields):
                 index.invalidate()
-                raise RuntimeError("The sheet changed (rows moved). Please run the command again.")
+                raise RuntimeError("That shift is no longer in the Schedule tab (past shifts move to 'Schedule Archive'). Edit it in the sheet.")
             changed.append(f"#{s['slot']}")
         msg = f"{TITLES[d.kind]} — {f['account']} {f['date']} {', '.join(changed)}"
     index.invalidate()

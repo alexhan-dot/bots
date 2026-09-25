@@ -38,6 +38,8 @@ def help_text(chat_id: str) -> str:
 def _init():
     try: sheets.ensure_tabs()
     except Exception as e: log.warning("sheet tab init skipped: %s", e)
+    try: sheets.housekeep(force=True)                  # 지난 시프트 → Schedule Archive, 오늘이 맨 위
+    except Exception as e: log.warning("housekeep skipped: %s", e)
     if discord_bot.PUBLIC_KEY:
         index.warm()                                   # 디스코드 첫 요청이 시트를 기다리지 않도록
     try: glossary.ensure_tab()

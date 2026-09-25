@@ -125,8 +125,9 @@ def _autocomplete(data: dict) -> dict:
         pool = working + [a for a in index.account_names(snap) if a not in set(working)]
         names = index.suggest(pool, q, 25)
         label = lambda a: a + ("  ·  " + "  ".join(
-            f"#{x.slot} {'OFF' if x.off else x.time[:5] + ' ' + (x.player or '—')}"
-            for x in sorted((x for x in day if x.account == a), key=lambda x: x.slot)) if any(x.account == a for x in day) else "")
+            f"#{x.slot} {x.time[:5]} {x.player or '—'}"
+            for x in sorted((x for x in day if x.account == a and not x.off), key=lambda x: x.slot))
+            if any(x.account == a and not x.off for x in day) else "")
     else:
         by = {}
         for x in day:
@@ -239,30 +240,33 @@ def _schedule_text(o: dict) -> str | dict:
         head = f"**{who}** — {date}" + (f"\nTL shift: {tl[0].shift} ({tl[0].attendance or 'no attendance yet'})" if tl else "")
     else:
         return _overview(date, snap)
-    body = "\n".join(f"• #{s.slot} `{'OFF' if s.off else s.time}` {s.player or '—'}"
+    rows = [x for x in rows if not x.off]
+    body = "\n".join(f"• #{s.slot} `{s.time}` {s.player or '—'}"
                      + (f" @{s.ground}" if s.ground else "") + ("" if o.get("account") else f" ({s.account})")
                      for s in rows)
     return f"{head}\n{body or 'No shifts.'}"
 
 
+def _visible(x) -> bool:
+    """보드에 보일 시프트: OFF 제외, 파밍 계정은 플레이어가 배정된 것만"""
+    return not x.off and (x.type != "Farming" or bool(x.player))
+
+
 def _overview(date: str, snap) -> dict:
     """/schedule (인자 없음) — 그날 전체를 임베드로 (빈 자리 / 고객 / 농장 / TL). 메시지 총 6000자 제한 안에서"""
-    day = [x for x in snap.shifts if x.date == date]
+    day = sorted((x for x in snap.shifts if x.date == date and _visible(x)), key=lambda x: (x.time, x.account.lower()))
     if not day:
         return {"content": f"No shifts on {date}."}
-    gaps = [x for x in day if not x.off and not x.player]
-    embeds = [{"title": f"📋 {date} — {sum(not x.off for x in day)} shifts · {len(gaps)} without a player",
+    gaps = [x for x in day if not x.player]                     # 플레이어 없는 고객 시프트
+    embeds = [{"title": f"📋 {date} — {len(day)} shifts · {len(gaps)} without a player",
                "color": 0xE67E22 if gaps else 0x2ECC71,
                "description": ("⚠️ " + ", ".join(f"{x.account} #{x.slot} `{x.time}`" for x in gaps)) if gaps else "✅ Every shift has a player"}]
     for typ, color in (("Client", 0x3498DB), ("Farming", 0x27AE60)):
-        accs = sorted({x.account for x in day if x.type == typ}, key=str.lower)
-        lines = []
-        for a in accs:
-            cells = [f"#{x.slot} " + ("OFF" if x.off else f"{x.time} {x.player or '⚠️'}")
-                     for x in sorted((x for x in day if x.account == a), key=lambda x: x.slot)]
-            lines.append(f"**{a}** " + " · ".join(cells))
+        rows = [x for x in day if x.type == typ]
+        lines = [f"`{x.time}` **{x.account}** #{x.slot} · {x.player or '⚠️ no player'}" + (f" @{x.ground}" if x.ground else "")
+                 for x in rows]
         if lines:
-            embeds.append({"title": typ, "color": color, "description": "\n".join(lines)})
+            embeds.append({"title": f"{typ} ({len(lines)})", "color": color, "description": "\n".join(lines)})
     tl = [t for t in snap.tl if t.date == date]
     if tl:
         embeds.append({"title": "Team leaders", "color": 0x95A5A6,
@@ -291,10 +295,8 @@ def _request_component(action: str, sid: str, name: str, bg) -> dict:
         days = []
         for i in range(7):
             d = (start + datetime.timedelta(days=i)).isoformat()
-            rows = index.shifts_on(d, acc, snap=snap)
-            if rows:
-                days.append(f"`{d[5:]}` " + " · ".join(f"#{x.slot} {'OFF' if x.off else x.time + ' ' + (x.player or '⚠️')}"
-                                                        for x in rows))
+            rows = [x for x in index.shifts_on(d, acc, snap=snap) if not x.off]
+            days.append(f"`{d[5:]}` " + (" · ".join(f"#{x.slot} {x.time} {x.player or '⚠️'}" for x in rows) or "OFF"))
         return _msg(f"**{acc}** — next 7 days\n" + ("\n".join(days) or "No shifts."))
     if action == "req_ok":
         if s.get("status") == "done":

@@ -2,7 +2,8 @@
 import os, datetime
 from zoneinfo import ZoneInfo
 
-TZ = ZoneInfo(os.environ.get("BOT_TZ", "Asia/Seoul"))
+TZ_NAME = os.environ.get("BOT_TZ", "Asia/Seoul")
+TZ = ZoneInfo(TZ_NAME)
 
 def now() -> datetime.datetime:
     return datetime.datetime.now(TZ)

@@ -8,11 +8,12 @@
 주간 탭을 따로 만들지 않고, 새 주 첫 작업 때 직전 주 행(시간·사냥터)을 복사해 이어 붙임.
 기존 수기 시트(TargetWeekNN)는 더 이상 읽거나 쓰지 않음.
 """
-import os, re, csv, datetime, functools
+import os, re, csv, datetime, functools, threading, logging
 import gspread
 from google.auth import default
 from services import clock
-from services.layout import (SCHEDULE_TAB, ACCOUNTS_TAB, SCHEDULE_COLS, METRIC_COLS, ACCOUNT_COLS,
+from services.layout import (SCHEDULE_TAB, ARCHIVE_TAB, ALL_TAB, TODAY_TAB, TODAY_COLS, all_shifts_formula,
+                             today_formulas, ACCOUNTS_TAB, SCHEDULE_COLS, METRIC_COLS, ACCOUNT_COLS,
                              DAYS, BOARDS, schedule_formulas, board_formulas,
                              TL_TAB, TL_BOARD, TL_COLS, tl_formulas, tl_board_formulas, pay_week_formula,
                              SETTINGS_TAB, SETTINGS_ROWS, PLANNER_TAB, PLANNER_COLS, PLANNER_EXAMPLE,
@@ -23,6 +24,10 @@ SHEET_ID = os.environ["SHEET_ID"]
 DATA = os.path.join(os.path.dirname(__file__), "..", "data")
 OP_DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]   # parser 스케줄 키 (date.weekday() 순서)
 COL = {c: i for i, c in enumerate(SCHEDULE_COLS)}
+
+log = logging.getLogger("sheets")
+LOCK = threading.RLock()        # Schedule 읽기→쓰기 사이에 정리(보관·정렬)가 끼어들지 않도록
+
 
 @functools.lru_cache
 def _client():
@@ -61,6 +66,7 @@ def ensure_tabs():
     _ensure_settings(book, titles)
     ws = book.worksheet(SCHEDULE_TAB)
     _write_calc_cols(ws, schedule_formulas())
+    _ensure_views(book, titles)
     for title, type_ in BOARDS.items():
         if title in titles:
             _write_formulas(book.worksheet(title), board_formulas(type_))
@@ -102,6 +108,115 @@ def _ensure_settings(book, titles):
         book.add_worksheet(PLANNER_TAB, rows=500, cols=len(PLANNER_COLS)).update(
             values=[PLANNER_COLS] + PLANNER_EXAMPLE, range_name="A1")
 
+def _ensure_views(book, titles):
+    """Schedule Archive(지난 시프트) · All Shifts(숨김 합본) · Today(맨 앞) 탭"""
+    calc = schedule_formulas()
+    head = SCHEDULE_COLS + [h for h, _ in calc.values()]
+    if ARCHIVE_TAB not in titles:
+        book.add_worksheet(ARCHIVE_TAB, rows=2000, cols=len(head)).update(values=[head], range_name="A1")
+    _write_calc_cols(book.worksheet(ARCHIVE_TAB), calc)
+    if ALL_TAB not in titles:
+        ws = book.add_worksheet(ALL_TAB, rows=5000, cols=len(head))
+        ws.update(values=[head], range_name="A1")
+        try: ws.hide()
+        except Exception: pass
+    ws = book.worksheet(ALL_TAB)
+    ws.update(values=[[all_shifts_formula()]], range_name="A2", value_input_option="USER_ENTERED")
+    if TODAY_TAB not in titles:
+        book.add_worksheet(TODAY_TAB, rows=300, cols=20)
+    t = book.worksheet(TODAY_TAB)
+    t.update(values=[TODAY_COLS + [""] + TODAY_COLS], range_name="A3")
+    t.batch_update([{"range": k, "values": [[v]]} for k, v in today_formulas().items()],
+                   value_input_option="USER_ENTERED")
+    try:
+        t.update_index(0)                                   # 맨 앞 탭
+        t.format("A1:T1", {"textFormat": {"bold": True, "fontSize": 13}})
+        t.format("A3:T3", {"textFormat": {"bold": True}, "backgroundColor": {"red": .85, "green": .9, "blue": 1}})
+        book.update_timezone(clock.TZ_NAME)                # 시트의 TODAY() 를 봇과 같은 시간대로
+    except Exception as e:
+        log.warning("today tab styling skipped: %s", e)
+    _grow_all(book)
+
+
+def _grow_all(book):
+    """All Shifts 는 FILTER 결과가 펼쳐질 행이 있어야 함 → Schedule+Archive 행 수 + 여유"""
+    try:
+        need = sum(len(book.worksheet(t).col_values(1)) for t in (SCHEDULE_TAB, ARCHIVE_TAB)) + 1000
+        ws = book.worksheet(ALL_TAB)
+        if ws.row_count < need:
+            ws.add_rows(need - ws.row_count)
+    except Exception as e:
+        log.warning("All Shifts resize skipped: %s", e)
+
+
+# ── 매일 정리: 지난 시프트 → Schedule Archive, 남은 것은 날짜순 (오늘이 맨 위) ──
+_last_housekeep = None
+
+
+def _serial_to_iso(v, with_time=False):
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        dt = datetime.datetime(1899, 12, 30) + datetime.timedelta(days=float(v))
+        return dt.strftime("%Y-%m-%dT%H:%M") if with_time else dt.date().isoformat()
+    return v
+
+
+def housekeep(force=False) -> int:
+    """반환: 보관한 행 수. 하루 한 번만 실제로 실행 (force 로 강제)"""
+    global _last_housekeep
+    today = _today()
+    if not force and _last_housekeep == today:
+        return 0
+    with LOCK:
+        book = _book()
+        ws = book.worksheet(SCHEDULE_TAB)
+        last = len(ws.col_values(1))
+        width = len(SCHEDULE_COLS)
+        end = chr(64 + width)
+        vals = ws.get(f"A2:{end}{max(last, 2)}", value_render_option="UNFORMATTED_VALUE") if last >= 2 else []
+        rows = []
+        for v in vals:
+            v = list(v) + [""] * (width - len(v))
+            if v[0] in ("", None): continue
+            v[0] = _norm_date(_serial_to_iso(v[0]))
+            v[COL["Updated"]] = _serial_to_iso(v[COL["Updated"]], with_time=True)
+            rows.append(v[:width])
+        iso = today.isoformat()
+        past = [r for r in rows if str(r[0]) < iso]
+        keep = [r for r in rows if str(r[0]) >= iso]
+        key = lambda r: (str(r[0]), r[COL["Type"]] != "Client", str(r[COL["Account"]]).lower(), str(r[COL["Slot"]]))
+        sorted_keep = sorted(keep, key=key)
+        if past:
+            book.worksheet(ARCHIVE_TAB).append_rows(sorted(past, key=key), value_input_option="RAW",
+                                                    table_range=f"A1:{end}1")
+        if past or sorted_keep != keep:
+            if sorted_keep:
+                ws.update(values=sorted_keep, range_name=f"A2:{end}{len(sorted_keep) + 1}", value_input_option="RAW")
+            if last > len(sorted_keep) + 1:
+                ws.batch_clear([f"A{len(sorted_keep) + 2}:{end}{last}"])
+            log.info("housekeep: archived %d, kept %d", len(past), len(sorted_keep))
+        _grow_all(book)
+        _last_housekeep = today
+        return len(past)
+
+
+def sort_schedule(ws=None):
+    """Schedule A:O 를 날짜 → 고객/농장 → 계정 → 슬롯 순으로 (시트 서버에서 정렬, 계산 열 P:U 는 따라 계산됨)"""
+    ws = ws or _book().worksheet(SCHEDULE_TAB)
+    last = len(ws.col_values(1))
+    if last > 2:
+        ws.sort((1, "asc"), (3, "asc"), (4, "asc"), (5, "asc"), range=f"A2:{chr(64 + len(SCHEDULE_COLS))}{last}")
+
+
+def housekeep_if_needed():
+    if _last_housekeep != _today():
+        try:
+            housekeep()
+            from services import index
+            index.invalidate()
+        except Exception as e:
+            log.warning("housekeep failed: %s", e)
+
+
 def _ensure_payroll(ws):
     """Payroll 수식. B2(보고 있는 기간)는 사람이 날짜를 넣었으면 유지, G2(기준일)는 월요일이어야 함"""
     f = payroll_formulas()
@@ -134,18 +249,31 @@ def append_log(tab: str, row: dict) -> int:
         return 0
 
 def update_shift_row(rownum: int, date: str, account: str, slot: int, **fields) -> bool:
-    """Schedule 한 행 수정 (디스코드 매니저용). 행이 여전히 같은 시프트인지 확인 후 씀 — 누가 정렬했으면 False"""
-    ws = _book().worksheet(SCHEDULE_TAB)
-    cur = ws.row_values(rownum)
-    cur = cur + [""] * (len(SCHEDULE_COLS) - len(cur))
-    try: cur_slot = int(cur[COL["Slot"]])
-    except (TypeError, ValueError): cur_slot = None
-    if _norm_date(cur[COL["Date"]]) != date or cur[COL["Account"]] != account or cur_slot != slot:
-        return False
-    data = [{"range": f"{chr(65 + COL[k])}{rownum}", "values": [[v]]} for k, v in fields.items()]
-    data.append({"range": f"{chr(65 + COL['Updated'])}{rownum}", "values": [[_now()]]})
-    ws.batch_update(data)
-    return True
+    """Schedule 한 행 수정 (디스코드 매니저용). 행이 옮겨졌으면(정렬·보관) 날짜·계정·슬롯으로 다시 찾음.
+    지난 시프트(Archive 로 옮겨짐)면 False"""
+    with LOCK:
+        ws = _book().worksheet(SCHEDULE_TAB)
+        ok = False
+        if rownum and rownum >= 2:
+            cur = ws.row_values(rownum)
+            cur = cur + [""] * (len(SCHEDULE_COLS) - len(cur))
+            try: cur_slot = int(cur[COL["Slot"]])
+            except (TypeError, ValueError): cur_slot = None
+            ok = _norm_date(cur[COL["Date"]]) == date and cur[COL["Account"]] == account and cur_slot == slot
+        if not ok:
+            rownum = None
+            for i, v in enumerate(ws.get(f"A2:E")):
+                v = list(v) + [""] * (5 - len(v))
+                try: sl = int(v[4])
+                except (TypeError, ValueError): continue
+                if _norm_date(v[0]) == date and v[3] == account and sl == slot:
+                    rownum = i + 2; break
+            if not rownum:
+                return False
+        data = [{"range": f"{chr(65 + COL[k])}{rownum}", "values": [[v]]} for k, v in fields.items()]
+        data.append({"range": f"{chr(65 + COL['Updated'])}{rownum}", "values": [[_now()]]})
+        ws.batch_update(data)
+        return True
 
 def _typed(r: list) -> list:
     """CSV 문자열 → Slot은 정수, KPI/Gold 숫자면 숫자"""
@@ -188,11 +316,27 @@ def add_master(row: dict):
     load_master(force=True)
 
 # ── Schedule 스냅샷 (작업 1건 = 읽기 1번 + 쓰기 몇 번) ──
+ARCHIVED, ARCHIVE_TAIL = -1, 1500
+
+
 class Schedule:
     def __init__(self):
-        self.ws = _book().worksheet(SCHEDULE_TAB)
-        vals = self.ws.get(f"A2:{chr(64 + len(SCHEDULE_COLS))}")
-        self.rows = []                      # [(rownum, dict)]
+        book = _book()
+        self.ws = book.worksheet(SCHEDULE_TAB)
+        end = chr(64 + len(SCHEDULE_COLS))
+        self.rows = []                      # [(rownum, dict)] — Archive 행은 rownum=ARCHIVED (읽기 전용)
+        self._load(self.ws.get(f"A2:{end}"), 2)
+        try:                                # 지난 2~3주 (다음 주 복사·어제 기록용). 수정은 하지 않음
+            aw = book.worksheet(ARCHIVE_TAB)
+            n = len(aw.col_values(1))
+            if n >= 2:
+                start = max(2, n - ARCHIVE_TAIL + 1)
+                self._load(aw.get(f"A{start}:{end}{n}"), None)
+        except gspread.WorksheetNotFound:
+            pass
+        self._updates, self._new = [], []       # _new: 이번 작업에서 추가할 행(dict, flush 전까지 수정 가능)
+
+    def _load(self, vals, first_row):
         for i, v in enumerate(vals):
             v = list(v) + [""] * (len(SCHEDULE_COLS) - len(v))
             if not v[0]: continue
@@ -200,8 +344,7 @@ class Schedule:
             d["Date"] = _norm_date(d["Date"])
             try: d["Slot"] = int(d["Slot"])
             except (TypeError, ValueError): d["Slot"] = 1
-            self.rows.append((i + 2, d))
-        self._updates, self._new = [], []       # _new: 이번 작업에서 추가할 행(dict, flush 전까지 수정 가능)
+            self.rows.append((first_row + i if first_row else ARCHIVED, d))
 
     # 조회
     def on(self, account: str, date: datetime.date) -> list[tuple[int, dict]]:
@@ -216,6 +359,8 @@ class Schedule:
 
     # 쓰기 (flush 때 일괄 반영)
     def set(self, rownum: int | None, row: dict, **fields):
+        if rownum == ARCHIVED:                  # 지난 시프트는 Archive 탭 — 봇이 고치지 않음
+            return
         row.update(fields)
         if rownum is None:                      # 아직 flush 안 된 새 행 → dict만 수정
             return
@@ -236,6 +381,7 @@ class Schedule:
             self.ws.batch_update(self._updates)          # RAW — 날짜/시간 문자열 그대로
         if self._new:
             self.ws.append_rows([[r[c] for c in SCHEDULE_COLS] for r in self._new], table_range="A1:O1")
+            sort_schedule(self.ws)                  # 새 행은 맨 아래에 붙으므로 날짜순으로 다시 (오늘이 맨 위)
         self._updates, self._new = [], []
 
     # 새 주 자동 생성
@@ -293,17 +439,21 @@ def apply(op: dict) -> str:
                "SCHEDULE_LEDGER": _apply_ledger}.get(t)
     if not handler:
         raise ValueError(f"unknown op type {t}")
-    s = Schedule()
-    result = handler(s, op)
-    s.flush()
+    housekeep_if_needed()
+    with LOCK:
+        s = Schedule()
+        result = handler(s, op)
+        s.flush()
     return result
 
 def rollover(sunday: datetime.date | None = None) -> int:
     """다음 주(기본) 행 미리 생성 — /week 명령·스케줄러용. Schedule + TL 근무표(근무시간만 복사)"""
     sunday = sunday or week_start(_today()) + datetime.timedelta(days=7)
-    s = Schedule()
-    n = s.ensure_week(sunday)
-    s.flush()
+    housekeep_if_needed()
+    with LOCK:
+        s = Schedule()
+        n = s.ensure_week(sunday)
+        s.flush()
     return n + _rollover_tl(sunday)
 
 def _rollover_tl(sunday: datetime.date) -> int:
@@ -457,13 +607,14 @@ def _apply_ledger(s: Schedule, op) -> str:
         if e["action"] == "delete":
             for n, r in same: s.set(n, r, Time="OFF")
         elif not same:
-            free = [(n, r) for n, r in rows if r["Time"] == "OFF" and n is not None]
+            free = [(n, r) for n, r in rows if r["Time"] == "OFF" and n not in (None, ARCHIVED)]
             if free:
                 s.set(free[0][0], free[0][1], Time=e["time"])
             else:                                      # 새 슬롯: 해당 주 나머지 요일은 OFF로 채워 그리드 유지
                 slot = max((r["Slot"] for _, r in s.week(week_start(d), ch)), default=0) + 1
                 for i in range(7):
                     day = week_start(d) + datetime.timedelta(days=i)
+                    if day < _today(): continue            # 지난 날은 Archive — 빈 칸 만들지 않음
                     s.add(Date=day.isoformat(), Type=type_, Account=ch, Slot=slot,
                           Time=e["time"] if day == d else "OFF")
         done.append(f"{e['date']} {e['time']} {'삭제' if e['action'] == 'delete' else '추가'}")

@@ -1,6 +1,10 @@
 """v2 시트 레이아웃 정의 — 봇(services/sheets.py)과 이관 스크립트(tools/build_v2_sheet.py)가 공유"""
 
-SCHEDULE_TAB = "Schedule"
+SCHEDULE_TAB = "Schedule"            # 오늘 + 앞으로의 시프트 (매일 날짜순 정렬, 오늘이 맨 위)
+ARCHIVE_TAB = "Schedule Archive"     # 지난 시프트 (봇이 매일 Schedule 에서 옮김, 같은 열 구조)
+ALL_TAB = "All Shifts"               # 숨김: Schedule + Archive 합본 (Board·Payroll 수식이 이 탭을 봄)
+AS = f"'{ALL_TAB}'"                   # 수식 안에서 쓰는 탭 참조
+TODAY_TAB = "Today"                  # 맨 앞 탭: 오늘·내일 시프트만 (OFF·플레이어 없는 파밍 제외)
 ACCOUNTS_TAB = "Accounts"
 
 # Schedule: 1행 = 계정 × 날짜 × 시프트(Slot). 봇은 A:O만 쓰고 P:S는 1행의 ARRAYFORMULA가 계산
@@ -84,17 +88,45 @@ def board_formulas(type_: str, last_row: int | None = None) -> dict:
     """Client/Farming Board 수식. 셀 → 수식. B2(주 시작일)는 사람이 바꿀 수 있어 여기 포함하지 않음"""
     n = "" if last_row is None else str(last_row)
     r0, rl = BOARD_FIRST_ROW, BOARD_LAST_ROW
-    f = {"A5": (f'=IFERROR(SORT(UNIQUE(FILTER(Schedule!D2:E{n},Schedule!Q2:Q{n}=$B$2,'
-                f'Schedule!C2:C{n}="{type_}")),1,TRUE,2,TRUE),"")')}
+    # 그 주에 보일 시프트가 하나라도 있는 계정·슬롯만 (OFF 만 있는 행, 플레이어 없는 파밍 행은 숨김)
+    f = {"A5": (f'=IFERROR(SORT(UNIQUE(FILTER({AS}!D2:E{n},{AS}!Q2:Q{n}=$B$2,'
+                f'{AS}!C2:C{n}="{type_}",{AS}!F2:F{n}<>"OFF",'
+                f'({AS}!C2:C{n}="Client")+({AS}!G2:G{n}<>""))),1,TRUE,2,TRUE),"")')}
     for j in range(7):
         col = chr(ord("C") + j)
         f[f"{col}4"] = f'=TEXT(DATEVALUE($B$2)+{j},"yyyy-mm-dd")'
-        f[f"{col}{r0}"] = (f'=ARRAYFORMULA(IF($A{r0}:$A{rl}="","",IFERROR(VLOOKUP({col}$4&"|"&$A{r0}:$A{rl}'
-                           f'&"|"&$B{r0}:$B{rl},Schedule!$R:$S,2,FALSE),"")))')
+        v = f'IFERROR(VLOOKUP({col}$4&"|"&$A{r0}:$A{rl}&"|"&$B{r0}:$B{rl},{AS}!$R:$S,2,FALSE),"")'
+        f[f"{col}{r0}"] = f'=ARRAYFORMULA(IF($A{r0}:$A{rl}="","",IF({v}="OFF","",{v})))'   # OFF 는 빈칸
     for r in range(r0, rl + 1):              # SUMIFS 는 ARRAYFORMULA 안에서 xlsx 가져오기 시 첫 값만 계산 → 행마다
-        f[f"J{r}"] = (f'=IF($A{r}="","",SUMIFS(Schedule!$P:$P,Schedule!$Q:$Q,$B$2,'
-                      f'Schedule!$D:$D,$A{r},Schedule!$E:$E,$B{r}))')
+        f[f"J{r}"] = (f'=IF($A{r}="","",SUMIFS({AS}!$P:$P,{AS}!$Q:$Q,$B$2,'
+                      f'{AS}!$D:$D,$A{r},{AS}!$E:$E,$B{r}))')
     return f
+
+
+def all_shifts_formula() -> str:
+    """All Shifts!A2 — Schedule + Archive 를 한 목록으로 (계산 열 P:U 포함)"""
+    return (f"=IFERROR(FILTER(VSTACK({SCHEDULE_TAB}!A2:U,'{ARCHIVE_TAB}'!A2:U),"
+            f"VSTACK({SCHEDULE_TAB}!A2:A,'{ARCHIVE_TAB}'!A2:A)<>\"\"),\"\")")
+
+
+TODAY_COLS = ["Time", "Account", "Type", "Slot", "Player", "Hunting Ground", "KPI", "Adena", "Note"]
+
+
+def today_formulas() -> dict:
+    """Today 탭: A = 오늘, K = 내일. OFF·플레이어 없는 파밍 제외, 시간순"""
+    def block(offset: int) -> str:
+        S = SCHEDULE_TAB
+        day = f'TEXT(TODAY()+{offset},"yyyy-mm-dd")'
+        cols = ",".join(f"{S}!{c}2:{c}" for c in "FDCEGHIJN")
+        return (f'=IFERROR(SORT(FILTER({{{cols}}},TEXT({S}!A2:A,"yyyy-mm-dd")={day},{S}!F2:F<>"OFF",'
+                f'({S}!C2:C="Client")+({S}!G2:G<>"")),1,TRUE,2,TRUE),"— no shifts —")')
+    return {
+        "A1": '="📋 TODAY  "&TEXT(TODAY(),"yyyy-mm-dd (ddd)")',
+        "K1": '="NEXT  "&TEXT(TODAY()+1,"yyyy-mm-dd (ddd)")',
+        "A2": '="⚠️ No player (client): "&IFERROR(COUNTIFS(Schedule!A2:A,TEXT(TODAY(),"yyyy-mm-dd"),Schedule!F2:F,"<>OFF",'
+              'Schedule!C2:C,"Client",Schedule!G2:G,""),0)',
+        "A4": block(0), "K4": block(1),
+    }
 
 
 # ── TL(팀 리더) 근무표 ─────────────────────────
@@ -165,7 +197,7 @@ def payroll_formulas(last_row: int | None = None) -> dict:
         return f"{fn('$B$2')}+{fn('$C$2')}"
 
     names = ",".join([
-        f"IFERROR(FILTER(Schedule!G2:G{n},Schedule!P2:P{n}>0,{in_period(f'Schedule!U2:U{n}')}))",
+        f"IFERROR(FILTER({AS}!G2:G{n},{AS}!P2:P{n}>0,{in_period(f'{AS}!U2:U{n}')}))",
         f"IFERROR(FILTER({tl}!C2:C{n},{tl}!J2:J{n}>0,{in_period(f'{tl}!K2:K{n}')}))",
         f"IFERROR(FILTER({OVERTIME_TAB}!B2:B{n},{in_period(f'{OVERTIME_TAB}!N2:N{n}')}))",
         f"IFERROR(FILTER({INCENTIVE_TAB}!B2:B{n},{in_period(f'{INCENTIVE_TAB}!N2:N{n}')}))",
@@ -180,7 +212,7 @@ def payroll_formulas(last_row: int | None = None) -> dict:
     # 합계 열은 행마다 (SUMIFS/COUNTIFS 는 ARRAYFORMULA 안에서 xlsx 가져오기 시 첫 값만 계산됨)
     for r in range(r0, rl + 1):
         a = f"$A{r}"
-        hours = lambda w: (f"SUMIFS(Schedule!$P:$P,Schedule!$G:$G,{a},Schedule!$U:$U,{w})"
+        hours = lambda w: (f"SUMIFS({AS}!$P:$P,{AS}!$G:$G,{a},{AS}!$U:$U,{w})"
                            f"+SUMIFS({tl}!$J:$J,{tl}!$C:$C,{a},{tl}!$K:$K,{w})")
         row = lambda expr: f'=IF({a}="","",{expr})'
         f[f"B{r}"] = row(hours("$B$2"))
@@ -190,11 +222,11 @@ def payroll_formulas(last_row: int | None = None) -> dict:
         f[f"F{r}"] = row(both(lambda w: f"SUMIFS({dp}!$E:$E,{dp}!$B:$B,{a},{dp}!$L:$L,{w})"))
         f[f"G{r}"] = row(f"D{r}+E{r}-F{r}")
         f[f"H{r}"] = row(both(lambda w: f"SUMIFS({INCENTIVE_TAB}!$H:$H,{INCENTIVE_TAB}!$B:$B,{a},{INCENTIVE_TAB}!$N:$N,{w})"))
-        f[f"I{r}"] = row(both(lambda w: f'COUNTIFS(Schedule!$G:$G,{a},Schedule!$U:$U,{w},Schedule!$P:$P,">0")'
+        f[f"I{r}"] = row(both(lambda w: f'COUNTIFS({AS}!$G:$G,{a},{AS}!$U:$U,{w},{AS}!$P:$P,">0")'
                                         f'+COUNTIFS({tl}!$C:$C,{a},{tl}!$K:$K,{w},{tl}!$J:$J,">0")'))
     for r in range(r0, rl + 1):                                    # 담당 캐릭터 (TEXTJOIN 은 행마다)
-        f[f"J{r}"] = (f'=IF($A{r}="","",IFERROR(TEXTJOIN(", ",TRUE,UNIQUE(FILTER(Schedule!$D$2:$D{n},'
-                      f'Schedule!$G$2:$G{n}=$A{r},Schedule!$P$2:$P{n}>0,{in_period(f"Schedule!$U$2:$U{n}")}))),""))')
+        f[f"J{r}"] = (f'=IF($A{r}="","",IFERROR(TEXTJOIN(", ",TRUE,UNIQUE(FILTER({AS}!$D$2:$D{n},'
+                      f'{AS}!$G$2:$G{n}=$A{r},{AS}!$P$2:$P{n}>0,{in_period(f"{AS}!$U$2:$U{n}")}))),""))')
     return f
 
 
@@ -230,5 +262,5 @@ def pay_week_formula(last_row: int | None = None) -> str:
 
 # xlsx 가져오기는 SORT/UNIQUE/FILTER 같은 목록 수식을 계산하지 못함 → xlsx 에는 목록을 값으로 넣고,
 # 봇이 기동할 때 이 범위를 비운 뒤 A5 에 동적 수식을 씀 (새 직원·계정 자동 반영)
-SPILL_SEEDS = {"Client Board": "A6:B300", "Farming Board": "A6:B300", TL_BOARD: "A6:A300",
+SPILL_SEEDS = {"Client Board": "A5:B300", "Farming Board": "A5:B300", TL_BOARD: "A5:A300",   # B5 값도 지워야 A5 가 2열로 펼쳐짐
                PAYROLL_TAB: f"A6:A{BOARD_FIRST_ROW + PAYROLL_ROWS - 1}"}

@@ -200,6 +200,7 @@ def make_rule(i: int, rec: dict, master: dict, lo: datetime.date | None, hi: dat
         return None
     r_lo, r_hi = _date(rec.get("From")) or lo, _date(rec.get("To")) or hi
     if lo and r_lo and r_lo < lo: r_lo = lo                      # 명령에서 준 기간으로 제한
+    if r_lo and r_lo < clock.today(): r_lo = clock.today()          # 지난 날짜는 Archive — 바꾸지 않음
     if hi and r_hi and r_hi > hi: r_hi = hi
     if not r_lo or not r_hi:
         plan.errors.append(f"{where}: needs From and To dates")
@@ -320,6 +321,12 @@ def _double_bookings(s, final: dict) -> list[str]:
 def apply(inline=None, lo=None, hi=None, account=None, reapply=False, by: str = "") -> Plan:
     """다시 계산해서 (미리보기 이후 시트가 바뀌었을 수 있음) Schedule 에 반영하고 Planner Status 기록"""
     book = sheets._book()
+    sheets.housekeep_if_needed()
+    with sheets.LOCK:
+        return _apply(book, inline, lo, hi, account, reapply, by)
+
+
+def _apply(book, inline, lo, hi, account, reapply, by) -> Plan:
     plan, changes, s = build(inline, lo, hi, account, reapply, book=book)
     master = {r["Account"]: r for r in sheets.load_master()}
     added = {}

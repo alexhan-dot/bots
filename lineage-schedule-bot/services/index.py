@@ -9,7 +9,7 @@ import datetime, threading, time, logging
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from services import sheets, clock
-from services.layout import SCHEDULE_TAB, SCHEDULE_COLS, TL_TAB, TL_COLS
+from services.layout import SCHEDULE_TAB, ARCHIVE_TAB, SCHEDULE_COLS, TL_TAB, TL_COLS
 
 log = logging.getLogger("index")
 TTL = 60
@@ -74,15 +74,28 @@ def load() -> Snapshot:
     snap = Snapshot(loaded_at=time.time())
     snap.accounts = {r["Account"]: r for r in book.worksheet("Accounts").get_all_records() if r.get("Account")}
     C = {c: i for i, c in enumerate(SCHEDULE_COLS)}
-    for i, v in enumerate(book.worksheet(SCHEDULE_TAB).get(f"A2:{chr(64 + len(SCHEDULE_COLS))}")):
-        v = list(v) + [""] * (len(SCHEDULE_COLS) - len(v))
-        d = sheets._norm_date(v[0])
-        if not d or not lo <= d <= hi:
-            continue
-        try: slot = int(v[C["Slot"]])
-        except (TypeError, ValueError): slot = 1
-        snap.shifts.append(Shift(i + 2, d, v[C["Account"]], v[C["Type"]], slot, v[C["Time"]].strip(),
-                                 v[C["Player"]].strip(), v[C["Hunting Ground"]], str(v[C["KPI"]])))
+    end = chr(64 + len(SCHEDULE_COLS))
+
+    def add(vals, first_row):
+        for i, v in enumerate(vals):
+            v = list(v) + [""] * (len(SCHEDULE_COLS) - len(v))
+            d = sheets._norm_date(v[0])
+            if not d or not lo <= d <= hi:
+                continue
+            try: slot = int(v[C["Slot"]])
+            except (TypeError, ValueError): slot = 1
+            snap.shifts.append(Shift(first_row + i if first_row else 0, d, v[C["Account"]], v[C["Type"]], slot,
+                                     str(v[C["Time"]]).strip(), str(v[C["Player"]]).strip(),
+                                     v[C["Hunting Ground"]], str(v[C["KPI"]])))
+
+    add(book.worksheet(SCHEDULE_TAB).get(f"A2:{end}"), 2)
+    try:                                                        # 지난 3주는 Schedule Archive 에 있음 (row=0: 수정 불가)
+        aw = book.worksheet(ARCHIVE_TAB)
+        n = len(aw.col_values(1))
+        if n >= 2:
+            add(aw.get(f"A{max(2, n - sheets.ARCHIVE_TAIL + 1)}:{end}{n}"), None)
+    except Exception as e:
+        log.warning("archive skipped: %s", e)
     try:
         for i, v in enumerate(book.worksheet(TL_TAB).get(f"A2:{chr(64 + len(TL_COLS))}")):
             v = list(v) + [""] * (len(TL_COLS) - len(v))
@@ -122,6 +135,7 @@ def _refresh_async():
     def run():
         global _snap, _refreshing
         try:
+            sheets.housekeep_if_needed()                        # 날짜가 바뀌었으면 지난 시프트 보관·정렬
             _snap = load()
         except Exception as e:
             log.warning("index refresh failed: %s", e)
