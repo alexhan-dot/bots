@@ -46,6 +46,27 @@ Every command shows a preview first → **Confirm**. Only you see the preview. S
 Sales requests from Telegram arrive in #sales-requests → **✅ Confirm** / **💬 Reply** / **📋 Schedule**. The salesperson gets it in Korean."""
 
 
+PLAYER_GUIDE = """**How to report your shift** (players)
+
+1️⃣ Once: `/iam name:<your name>` — pick your name from the list.
+2️⃣ At the **start** of your shift: `/shot` → attach a screenshot showing your **level + EXP %** and your **inventory with Adena**.
+3️⃣ At the **end** of your shift: `/shot` again with the same kind of screenshot.
+
+The bot reads Level / EXP % / Adena → check the numbers → **Confirm** (or **Fix numbers** if something is wrong).
+At the end it shows what you gained this shift (EXP % and Adena). `/myshifts` shows your next 3 days."""
+
+
+def pin_guide(token, channel, me, text, marker):
+    recent = api("GET", f"/channels/{channel}/messages?limit=50", token, soft=True) or []
+    mine = [m for m in recent if m["author"]["id"] == me and m.get("content", "").startswith(marker)]
+    if mine:
+        m = mine[0]
+        api("PATCH", f"/channels/{channel}/messages/{m['id']}", token, json={"content": text})
+    else:
+        m = api("POST", f"/channels/{channel}/messages", token, json={"content": text})
+    return bool(m.get("pinned") or api("PUT", f"/channels/{channel}/pins/{m['id']}", token, soft=True) is not None)
+
+
 def api(method, path, token, soft=False, **kw):
     """soft=True: 실패해도 멈추지 않고 None (고정처럼 없어도 되는 작업)"""
     r = httpx.request(method, API + path, headers={"Authorization": f"Bot {token}"}, timeout=30, **kw)
@@ -119,19 +140,12 @@ def main():
     cmds = api("PUT", f"/applications/{app_id}/guilds/{gid}/commands", token, json=COMMANDS)
     print("명령 등록:", ", ".join("/" + c["name"] for c in cmds))
 
-    desk = ids["manager-desk"]                                  # 사용법 안내 (이미 올렸으면 수정 — 중복 없음)
     me = api("GET", "/users/@me", token)["id"]
-    recent = api("GET", f"/channels/{desk}/messages?limit=50", token, soft=True) or []
-    mine = [m for m in recent if m["author"]["id"] == me and m.get("content", "").startswith("**How to use the bot**")]
-    if mine:
-        m = mine[0]
-        api("PATCH", f"/channels/{desk}/messages/{m['id']}", token, json={"content": GUIDE})
-    else:
-        m = api("POST", f"/channels/{desk}/messages", token, json={"content": GUIDE})
-    if m.get("pinned") or api("PUT", f"/channels/{desk}/pins/{m['id']}", token, soft=True) is not None:
-        print("사용법 안내를 #manager-desk 에 고정")
-    else:
-        print("사용법 안내를 #manager-desk 에 올림 — 고정 권한이 없어 직접 고정해주세요 (메시지 우클릭 > 메시지 고정)")
+    for ch, text, marker in ((ids["manager-desk"], GUIDE, "**How to use the bot**"),
+                             (ids["shift-reports"], PLAYER_GUIDE, "**How to report your shift**")):
+        name = next(n for n, i in ids.items() if i == ch)
+        print(f"사용법 안내 #{name} " + ("고정" if pin_guide(token, ch, me, text, marker)
+                                        else "올림 — 고정 권한이 없어 직접 고정해주세요 (메시지 ⋯ > 메시지 고정)"))
 
     if a.endpoint:
         url = a.endpoint.rstrip("/") + "/discord/interactions"

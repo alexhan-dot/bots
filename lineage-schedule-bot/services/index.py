@@ -9,7 +9,7 @@ import datetime, threading, time, logging
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from services import sheets, clock
-from services.layout import SCHEDULE_TAB, ARCHIVE_TAB, SCHEDULE_COLS, TL_TAB, TL_COLS
+from services.layout import SCHEDULE_TAB, ARCHIVE_TAB, SCHEDULE_COLS, TL_TAB, TL_COLS, STAFF_TAB
 
 log = logging.getLogger("index")
 TTL = 60
@@ -54,6 +54,7 @@ class Snapshot:
     shifts: list = field(default_factory=list)          # [Shift]
     tl: list = field(default_factory=list)              # [TLShift]
     staff: list = field(default_factory=list)           # 자동완성용 직원 이름 (플레이어 + TL)
+    links: dict = field(default_factory=dict)           # 디스코드 ID → 스케줄 이름 (Staff 탭, /iam)
 
 
 _snap = Snapshot()
@@ -104,7 +105,13 @@ def load() -> Snapshot:
                 snap.tl.append(TLShift(i + 2, d, v[2].strip(), v[3], v[4]))
     except Exception as e:                                      # TL 탭 없어도 동작
         log.warning("TL tab skipped: %s", e)
-    names = {s.player for s in snap.shifts if s.player} | {t.leader for t in snap.tl if t.leader}
+    try:                                                        # Staff 탭 (없으면 무시)
+        for r in book.worksheet(STAFF_TAB).get("A2:B"):
+            if len(r) > 1 and r[0] and r[1]:
+                snap.links[str(r[1])] = r[0]
+    except Exception:
+        pass
+    names = {s.player for s in snap.shifts if s.player} | {t.leader for t in snap.tl if t.leader} | set(snap.links.values())
     snap.staff = sorted(names, key=str.lower)
     return snap
 

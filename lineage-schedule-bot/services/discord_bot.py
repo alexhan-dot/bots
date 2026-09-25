@@ -18,6 +18,7 @@ PUBLIC_KEY = os.environ.get("DISCORD_PUBLIC_KEY", "")
 APP_ID = os.environ.get("DISCORD_APP_ID", "")
 MANAGER_ROLES = {x.strip() for x in os.environ.get("DISCORD_MANAGER_ROLE_IDS", "").split(",") if x.strip()}
 EPHEMERAL = 64
+PLAYER_CMDS = {"iam", "shot", "myshifts"}                    # 매니저 역할 없이도 쓰는 명령 (플레이어용)
 GREEN, RED, GREY = 3, 4, 2
 
 # ── 명령 정의 (tools/register_discord_commands.py 가 등록) ──
@@ -54,6 +55,14 @@ COMMANDS = [
     {"name": "log", "description": "Free-text note — AI fills the form, you confirm", "options": [
         _o("text", S, "e.g. Reno 2h OT on Jjuni last night, boss fight", True)]},
     {"name": "week", "description": "Create next week's schedule rows now"},
+    {"name": "iam", "description": "Players: link your Discord to your name in the schedule (once)", "options": [
+        _o("name", S, "Your name as in the schedule", True, True)]},
+    {"name": "shot", "description": "Players: upload your START or END screenshot (EXP % and Adena are read)", "options": [
+        {"name": "image", "type": 11, "description": "Game screenshot (EXP bar + inventory with Adena)", "required": True},
+        _o("account", S, "Character (default: your current shift)", auto=True),
+        {"name": "kind", "type": S, "description": "Default: start if not started yet, else end",
+         "choices": [{"name": "Start of shift", "value": "start"}, {"name": "End of shift", "value": "end"}]}]},
+    {"name": "myshifts", "description": "Players: your shifts for the next 3 days"},
     {"name": "check", "description": "Post a confirmation card now (daily or weekly schedule check)", "options": [
         {"name": "kind", "type": S, "description": "day or week", "required": True,
          "choices": [{"name": "Today / a day", "value": "day"}, {"name": "Next week", "value": "week"}]},
@@ -97,7 +106,10 @@ async def handle(p: dict, bg) -> dict:
         return {"type": 1}
     uid, name = _who(p)
     roles = set((p.get("member") or {}).get("roles", []))
-    if MANAGER_ROLES and not roles & MANAGER_ROLES:
+    data = p.get("data") or {}
+    player_ok = (data.get("name") in PLAYER_CMDS if t in (2, 4)
+                 else str(data.get("custom_id", "")).startswith("shot_"))
+    if MANAGER_ROLES and not roles & MANAGER_ROLES and not player_ok:
         return _msg("Only managers can use this bot.") if t != 4 else {"type": 8, "data": {"choices": []}}
     if t == 4:
         return _autocomplete(p["data"])
@@ -157,6 +169,14 @@ async def _command(p, uid, name, bg) -> dict:
     if cmd == "week":
         bg.add_task(_run_week, p["token"])
         return {"type": 5, "data": {"flags": EPHEMERAL}}
+    if cmd == "iam":
+        return _iam(uid, name, o.get("name", ""), bg)
+    if cmd == "myshifts":
+        return _msg(_myshifts(uid))
+    if cmd == "shot":
+        att = ((p["data"].get("resolved") or {}).get("attachments") or {}).get(str(o.get("image")), {})
+        bg.add_task(_run_shot, p["token"], uid, att, o.get("account"), o.get("kind"))
+        return {"type": 5, "data": {"flags": EPHEMERAL}}
     if cmd == "check":
         bg.add_task(_run_check, p["token"], o.get("kind", "day"), o.get("date"))
         return {"type": 5, "data": {"flags": EPHEMERAL}}
@@ -175,6 +195,8 @@ def _component(p, uid, name, bg) -> dict:
     action, sid = p["data"]["custom_id"].split("|", 1)
     if action.startswith("req_"):                                # 텔레그램 영업 요청 카드 버튼 (누구나 매니저면 처리)
         return _request_component(action, sid, name, bg)
+    if action.startswith("shot_"):                               # 플레이어 스크린샷 미리보기
+        return _shot_component(p, action, sid, uid, name, bg)
     if action.startswith("conf_"):                               # 일별·주별 컨펌 카드
         return _confirm_component(p, action, sid, name, bg)
     s = state.get(sid)
@@ -327,6 +349,8 @@ def _request_component(action: str, sid: str, name: str, bg) -> dict:
 def _modal(p, name: str, bg) -> dict:
     cid = p["data"]["custom_id"]
     action, sid = cid.split("|", 1)
+    if action == "shot_modal":
+        return _shot_modal(p, sid)
     if action != "req_modal":
         return _msg("Unknown form.")
     s = state.get(sid)
@@ -360,6 +384,201 @@ async def _tell_sales(s: dict, kind: str, manager_name: str, text: str):
         await tg.send(chat, msg)
     except Exception:
         log.exception("telegram relay failed")
+
+
+# ── 플레이어: /iam · /myshifts · /shot ─────────────
+def _iam(uid: str, discord_name: str, raw: str, bg) -> dict:
+    snap = index.get()
+    who, cands = index.resolve_name(snap.staff, raw)
+    if not who:
+        return _msg(f"Can't find '{raw}' in the schedule." + (f" Did you mean: {', '.join(cands)}?" if cands else "")
+                    + " Pick your name from the list.")
+    snap.links[str(uid)] = who                                     # 바로 쓸 수 있게 메모리에도
+    bg.add_task(_run_link, uid, discord_name, who)
+    return _msg(f"✅ Linked: you are **{who}**. Now use `/shot` at the start and end of each shift.")
+
+
+async def _run_link(uid, discord_name, who):
+    from services import reports
+    try:
+        reports.link(uid, discord_name, who)
+    except Exception:
+        log.exception("link failed")
+
+
+def _myshifts(uid: str) -> str:
+    snap = index.get()
+    who = snap.links.get(str(uid))
+    if not who:
+        return "First link yourself: `/iam name:<your name>`"
+    out = []
+    for i in range(3):
+        d = (clock.today() + datetime.timedelta(days=i)).isoformat()
+        rows = [x for x in index.shifts_on(d, player=who, snap=snap) if not x.off]
+        out += [f"`{d[5:]}` `{x.time}` **{x.account}** #{x.slot}" + (f" @{x.ground}" if x.ground else "") for x in rows]
+    return f"**{who}** — next 3 days\n" + ("\n".join(out) or "No shifts.")
+
+
+def _fmt_vals(v: dict) -> tuple[str, str, str]:
+    lv = str(v.get("level")) if (v.get("level") or 0) > 0 else "?"
+    pct = f"{v['exp_percent']:.4f}%" if isinstance(v.get("exp_percent"), (int, float)) and v["exp_percent"] >= 0 else "?"
+    ad = f"{int(v['adena']):,}" if isinstance(v.get("adena"), (int, float)) and v["adena"] >= 0 else "?"
+    return lv, pct, ad
+
+
+def _shot_render(sid: str, st: dict) -> dict:
+    from services import reports
+    v, sh, kind = st["vals"], st["shift"], st["kind"]
+    lv, pct, ad = _fmt_vals(v)
+    fields = [{"name": "Shift", "value": f"{sh['date']} · {sh['account']} #{sh['slot']} `{sh['time']}`", "inline": False},
+              {"name": "Level", "value": lv, "inline": True}, {"name": "EXP", "value": pct, "inline": True},
+              {"name": "Adena", "value": ad, "inline": True}]
+    if kind == "end" and st.get("start"):
+        exp, adena = reports.gains(st["start"], v)
+        gain = []
+        if exp is not None: gain.append(f"EXP **{exp:+.4f}%**")
+        if adena is not None: gain.append(f"Adena **{adena:+,}**")
+        fields.append({"name": "This shift", "value": " · ".join(gain) or "— (start numbers missing)", "inline": False})
+    warn = []
+    if "?" in (lv, pct, ad): warn.append("⚠️ Some numbers weren't readable — press **Fix** to type them.")
+    if v.get("confidence") == "low": warn.append("⚠️ Low confidence — please double-check.")
+    if v.get("notes"): warn.append(f"🛈 {v['notes'][:200]}")
+    embed = {"title": f"📸 {'Start' if kind == 'start' else 'End'} of shift — {st['player']}",
+             "description": "\n".join(warn) or "Check the numbers, then **Confirm**.",
+             "color": 0xE67E22 if warn else 0x2ECC71, "fields": fields,
+             "image": {"url": st["url"]} if st.get("url") else None}
+    embed = {k: v2 for k, v2 in embed.items() if v2 is not None}
+    other = "end" if kind == "start" else "start"
+    rows = [{"type": 1, "components": [
+        {"type": 2, "style": GREEN, "label": "Confirm", "custom_id": f"shot_ok|{sid}"},
+        {"type": 2, "style": GREY, "label": "Fix numbers", "custom_id": f"shot_fix|{sid}"},
+        {"type": 2, "style": GREY, "label": f"It's the {other}", "custom_id": f"shot_kind|{sid}"},
+        {"type": 2, "style": RED, "label": "Cancel", "custom_id": f"shot_no|{sid}"}]}]
+    return {"content": "", "embeds": [embed], "components": rows, "allowed_mentions": {"parse": []}}
+
+
+async def _run_shot(token: str, uid: str, att: dict, account: str | None, kind: str | None):
+    from services import vision, reports
+    try:
+        snap = index.get(block=True)
+        who = snap.links.get(str(uid))
+        if not who:
+            await _edit(token, {"content": "First link yourself: `/iam name:<your name>` — then send the screenshot again."}); return
+        acc = None
+        if account:
+            acc, cands = index.resolve_account(account, snap)
+            if not acc:
+                await _edit(token, {"content": f"Unknown character '{account}'."}); return
+        shift, near = reports.find_shift(who, acc, snap=snap)
+        if not shift:
+            hint = ", ".join(f"{s.date[5:]} {s.account} `{s.time}`" for s in near[:5]) or "none today/yesterday"
+            await _edit(token, {"content": f"❌ No shift of yours is running now. Your shifts: {hint}. "
+                                           "Add `account:` if you're on a different character."}); return
+        sh = manager._sd(shift)
+        async with httpx.AsyncClient(timeout=30) as c:
+            img = (await c.get(att["url"])).content
+        vals = await vision.read_screenshot(img, (att.get("content_type") or "").split(";")[0])
+        k = kind or reports.kind_for(sh, who)
+        start = None
+        if k == "end":
+            _, rep = reports.find_report(sh, who)
+            if rep:
+                start = {"level": rep.get("Start Lv"), "exp_percent": rep.get("Start EXP %"), "adena": rep.get("Start Adena")}
+        st = {"player": who, "shift": sh, "kind": k, "vals": vals, "url": att.get("url"), "filename": att.get("filename") or "shot.png",
+              "ctype": att.get("content_type") or "image/png", "start": start}
+        sid = state.create(flow="shot", user_id=uid, status="preview", **st)
+        await _edit(token, _shot_render(sid, st))
+    except Exception as e:
+        log.exception("shot failed")
+        await _edit(token, {"content": f"❌ Couldn't read the screenshot: {e}"})
+
+
+def _shot_component(p, action: str, sid: str, uid: str, name: str, bg) -> dict:
+    st = state.get(sid)
+    if not st:
+        return {"type": 7, "data": {"content": "This expired. Send `/shot` again.", "embeds": [], "components": []}}
+    if st.get("user_id") != uid:
+        return _msg("Only the player who sent it can confirm.")
+    if action == "shot_no":
+        state.delete(sid)
+        return {"type": 7, "data": {"content": "Cancelled.", "embeds": [], "components": []}}
+    if action == "shot_kind":
+        st["kind"] = "end" if st["kind"] == "start" else "start"
+        if st["kind"] == "end" and not st.get("start"):
+            from services import reports
+            _, rep = reports.find_report(st["shift"], st["player"])
+            if rep:
+                st["start"] = {"level": rep.get("Start Lv"), "exp_percent": rep.get("Start EXP %"), "adena": rep.get("Start Adena")}
+        state.update(sid, kind=st["kind"], start=st.get("start"))
+        return {"type": 7, "data": _shot_render(sid, st)}
+    if action == "shot_fix":
+        lv, pct, ad = _fmt_vals(st["vals"])
+        inp = lambda cid, label, val: {"type": 1, "components": [{"type": 4, "custom_id": cid, "style": 1, "label": label,
+                                                                   "required": False, "value": "" if val == "?" else val.replace("%", "").replace(",", "")}]}
+        return {"type": 9, "data": {"custom_id": f"shot_modal|{sid}", "title": "Fix the numbers", "components": [
+            inp("level", "Level", lv), inp("exp", "EXP % (e.g. 37.4512)", pct), inp("adena", "Adena (e.g. 1234567)", ad)]}}
+    if action == "shot_ok":
+        if st.get("status") != "preview":
+            return _msg("Already saved.")
+        state.update(sid, status="saving")
+        bg.add_task(_run_shot_save, p["token"], sid, st, uid)
+        return {"type": 7, "data": {"content": "⏳ Saving…", "embeds": _shot_render(sid, st)["embeds"], "components": []}}
+    return _msg("Unknown action.")
+
+
+def _shot_modal(p, sid: str) -> dict:
+    st = state.get(sid)
+    if not st:
+        return _msg("This expired. Send `/shot` again.")
+    vals = dict(st["vals"])
+    for row in p["data"]["components"]:
+        c = row["components"][0]
+        raw = str(c.get("value", "")).replace(",", "").replace("%", "").strip()
+        if not raw: continue
+        try:
+            if c["custom_id"] == "level": vals["level"] = int(float(raw))
+            if c["custom_id"] == "exp": vals["exp_percent"] = float(raw)
+            if c["custom_id"] == "adena": vals["adena"] = int(float(raw))
+        except ValueError:
+            return _msg(f"'{raw}' is not a number.")
+    vals["notes"] = "edited by player"; vals["confidence"] = "high"
+    st["vals"] = vals
+    state.update(sid, vals=vals)
+    return {"type": 7, "data": _shot_render(sid, st)}
+
+
+async def _run_shot_save(token: str, sid: str, st: dict, uid: str):
+    from services import reports
+    try:
+        link = ""
+        try:                                                     # 스크린샷을 #shift-reports 에 올려 영구 보관
+            async with httpx.AsyncClient(timeout=30) as c:
+                img = (await c.get(st["url"])).content
+            lv, pct, ad = _fmt_vals(st["vals"])
+            sh = st["shift"]
+            caption = (f"📸 **{'Start' if st['kind'] == 'start' else 'End'}** · {st['player']} · {sh['account']} #{sh['slot']} "
+                       f"`{sh['time']}` · Lv {lv} · {pct} · {ad} adena")
+            if notify.BOT_TOKEN and notify.REPORTS_CH:
+                msg = await notify.post_file(notify.REPORTS_CH, {"content": caption, "allowed_mentions": {"parse": []}},
+                                             st["filename"], img, st["ctype"])
+                if msg.get("id"):
+                    link = f"https://discord.com/channels/{os.environ.get('DISCORD_GUILD_ID', '@me')}/{notify.REPORTS_CH}/{msg['id']}"
+        except Exception:
+            log.exception("screenshot repost failed")
+        out = reports.save(st["shift"], st["player"], st["kind"], st["vals"], link or st.get("url", ""), uid)
+        state.update(sid, status="done")
+        res = f"✅ Saved {'start' if out['kind'] == 'start' else 'end'} of shift."
+        if out["kind"] == "end":
+            parts = []
+            if out["exp_gain"] is not None: parts.append(f"EXP {out['exp_gain']:+.4f}%")
+            if out["adena_gain"] is not None: parts.append(f"Adena {out['adena_gain']:+,}")
+            res += " " + (" · ".join(parts) if parts else "(no start numbers to compare)")
+            await notify.log_line(f"📈 {st['player']} {st['shift']['account']} {st['shift']['date']}: " + (" · ".join(parts) or "end saved"))
+        await _edit(token, {"content": res, "components": []})
+    except Exception as e:
+        log.exception("shot save failed")
+        state.update(sid, status="preview")
+        await _edit(token, {**_shot_render(sid, st), "content": f"❌ Not saved: {e}"})
 
 
 # ── 일별·주별 컨펌 ──────────────────────────────

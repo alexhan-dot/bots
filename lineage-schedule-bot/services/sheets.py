@@ -254,11 +254,10 @@ def append_log(tab: str, row: dict) -> int:
     except Exception:
         return 0
 
-def update_shift_row(rownum: int, date: str, account: str, slot: int, **fields) -> bool:
-    """Schedule 한 행 수정 (디스코드 매니저용). 행이 옮겨졌으면(정렬·보관) 날짜·계정·슬롯으로 다시 찾음.
-    지난 시프트(Archive 로 옮겨짐)면 False"""
+def update_shift_row(rownum: int, date: str, account: str, slot: int, tab: str = SCHEDULE_TAB, **fields) -> bool:
+    """Schedule(또는 Archive) 한 행 수정. 행이 옮겨졌으면(정렬·보관) 날짜·계정·슬롯으로 다시 찾음. 없으면 False"""
     with LOCK:
-        ws = _book().worksheet(SCHEDULE_TAB)
+        ws = _book().worksheet(tab)
         ok = False
         if rownum and rownum >= 2:
             cur = ws.row_values(rownum)
@@ -280,6 +279,12 @@ def update_shift_row(rownum: int, date: str, account: str, slot: int, **fields) 
         data.append({"range": f"{chr(65 + COL['Updated'])}{rownum}", "values": [[_now()]]})
         ws.batch_update(data)
         return True
+
+
+def update_shift_anywhere(date: str, account: str, slot: int, **fields) -> bool:
+    """Schedule 에 없으면(이미 지난 날짜) Archive 에서 찾아 수정 — 스크린샷 기록(KPI·Gold)용"""
+    return (update_shift_row(0, date, account, slot, **fields)
+            or update_shift_row(0, date, account, slot, tab=ARCHIVE_TAB, **fields))
 
 def _typed(r: list) -> list:
     """CSV 문자열 → Slot은 정수, KPI/Gold 숫자면 숫자"""

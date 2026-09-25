@@ -3,7 +3,7 @@
 봇 토큰 + 채널 ID 가 있으면 봇이 직접 **버튼 달린 카드**를 올림 (매니저가 버튼으로 확인·답장 → 텔레그램 영업자에게 회신).
 없으면 예전처럼 웹훅에 텍스트만 (링크 컨펌).
 """
-import os, logging, httpx
+import os, json, logging, httpx
 
 log = logging.getLogger("notify")
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL", "")
@@ -41,6 +41,19 @@ async def _bot(method: str, path: str, payload: dict | None = None) -> dict:
 
 async def post(channel_id: str, payload: dict) -> dict:
     return await _bot("POST", f"/channels/{channel_id}/messages", payload)
+
+
+async def post_file(channel_id: str, payload: dict, filename: str, data: bytes, content_type: str) -> dict:
+    """이미지를 첨부해 채널에 올림 (디스코드에 영구 보관 — 슬래시 명령 첨부 URL은 만료됨)"""
+    payload = {**payload, "attachments": [{"id": 0, "filename": filename}]}
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await c.post(f"{API}/channels/{channel_id}/messages", headers={"Authorization": f"Bot {BOT_TOKEN}"},
+                         data={"payload_json": json.dumps(payload)},
+                         files={"files[0]": (filename, data, content_type)})
+    if r.status_code >= 300:
+        log.warning("discord file post → %s %s", r.status_code, r.text[:300])
+        return {}
+    return r.json()
 
 
 async def log_line(text: str) -> bool:

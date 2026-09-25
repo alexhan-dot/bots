@@ -31,6 +31,14 @@ SETTINGS_ROWS = [["Setting", "Value", "Note"],
                  ["Weekly Confirm Time", "12:00", ""],
                  ["Reminder After (hours)", "3", "Remind managers once if not confirmed"]]
 
+STAFF_TAB = "Staff"                  # 디스코드 계정 ↔ 스케줄 이름 (플레이어가 /iam 으로 연결)
+STAFF_COLS = ["Name", "Discord ID", "Discord Name", "Role", "Linked At"]
+REPORTS_TAB = "Shift Reports"        # 플레이어 시작·종료 스크린샷 → 레벨·EXP %·아데나
+REPORT_COLS = ["Date", "Account", "Slot", "Shift Time", "Player",
+               "Start At", "Start Lv", "Start EXP %", "Start Adena", "Start Shot",
+               "End At", "End Lv", "End EXP %", "End Adena", "End Shot",
+               "EXP Gained %", "Adena Gained", "Status", "Discord ID"]
+
 CONFIRM_TAB = "Confirmations"
 CONFIRM_COLS = ["Kind", "Period", "Status", "Posted At", "Confirmed By", "Confirmed At", "Summary"]
 
