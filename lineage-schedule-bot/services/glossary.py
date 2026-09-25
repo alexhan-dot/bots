@@ -51,4 +51,4 @@ def ensure_tab():
         ws = book.add_worksheet(TAB, rows=300, cols=6)
         with open(os.path.join(os.path.dirname(__file__), "..", "data", "glossary.csv"),
                   encoding="utf-8-sig") as f:
-            ws.update("A1", list(csv.reader(f)))
+            ws.update(values=list(csv.reader(f)), range_name="A1")

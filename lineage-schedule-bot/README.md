@@ -11,22 +11,30 @@
 ## 작업 유형 규칙
 | 유형 | 동작 | 시간 변경 |
 |---|---|---|
-| NEW_CHARACTER | 캐릭명+클래스 구분 입력, MON~SUN 전 요일 시간 필수 | 신규 정의 |
+| NEW_CHARACTER | 캐릭명+클래스+**고객/농장** 구분 입력, MON~SUN 전 요일 시간 필수 | 신규 정의 |
 | STOP | 해당 일자만 OFF | ❌ 불변 |
 | PLAYER_SWAP | 플레이어명만 교체 | ❌ 불변 |
 | EXTEND | 해당 일자·해당 시프트만 24:00-08:00 → 24:00-09:30 식 변경 | 해당 셀만 |
 
-## 시트 구조
-- `CharacterMaster` 탭: CanonicalName / Class / Server / Block / KoreanName / Aliases(|구분) / Status
-  - 스케줄 없는 캐릭터는 Status=Inactive로 기록 보존, 주간 탭에서는 제외
-- 주간 탭 `W{주차}_{일요일날짜}`: 봇이 자동 생성. Character | Class | Block | Shift | SUN~SAT
-  - 셀값: `시간\n플레이어명` 또는 `OFF`
-- 기존 수기 탭은 그대로 두고 읽기 전용 (봇 가동 주부터 표준 탭 사용)
+## 시트 구조 — `Lineage Schedule v2` (고객/농장 분리)
+기존 수기 시트(`TargetWeekNN` 탭, 고객·농장이 한 그리드에 좌우로 섞임)는 더 이상 봇이 읽거나 쓰지 않음.
+새 시트: https://docs.google.com/spreadsheets/d/1fMQDRmGVVtaUR0cVBzzSaowHU38clVuON1PoxGWCT_A
+
+| 탭 | 용도 | 편집 |
+|---|---|---|
+| `Client Board` / `Farming Board` | 고객 / 농장 계정 주간 그리드 (셀 = 시간⏎플레이어⏎@사냥터). B2에 일요일 날짜 넣으면 다른 주 조회 | 보기 전용 (수식) |
+| `Schedule` | 원장. 1행 = 계정 × 날짜 × 시프트(Slot). A:O 입력, P:S(Hours/Week/Key/Display) 자동 계산 | 사람 + 봇 |
+| `Accounts` | 계정 마스터. **Type = Client(고객) / Farming(농장)**, Status = Active/Paused/Inactive, Customer, SalesRep | 사람 + 봇 |
+| `Glossary` / `EventLog` | 용어 사전 / 봇 기록 | |
+
+- 주간 탭을 매주 새로 만들지 않음. 새 주 첫 작업(또는 `/week` 명령) 때 직전 주의 **시간·사냥터를 복사**, 플레이어·실적은 비움 (Active 계정만)
+- 고객↔농장 이동 = `Accounts`의 Type 변경 (다음 주 생성분부터 반영)
+- 봇 기동 시: Schedule/Accounts가 비어 있으면 `data/schedule_seed.csv`, `data/accounts_seed.csv`로 채우고, 계산 수식(P:S, Board)을 다시 씀
+- 기존 수기 시트에서 다시 이관하려면: `python tools/build_v2_sheet.py 원본.xlsx "TargetWeekNN(...)" out.xlsx`
 
 ## 설정 순서
 1. **텔레그램 봇**: @BotFather → /newbot → 토큰 확보. 대표/영업자 chat_id는 @userinfobot으로 확인
-2. **시트 준비**: `data/character_master.csv`를 `CharacterMaster` 탭으로 가져오기(파일 > 가져오기)
-   - ⚠️ 계정 비밀번호 탭은 별도 시트로 분리 권장 (봇 서비스계정 접근 범위 밖으로)
+2. **시트**: `Lineage Schedule v2` 사용 (이미 생성됨, 탭 준비 불필요). 로그인 정보 탭 없음 — 넣지 말 것
 3. **서비스계정·Firestore**: `WORK_ORDER.md` Phase 2 명령으로 `lineage-bot@<PROJECT_ID>.iam.gserviceaccount.com` 생성 + Firestore(Native) 생성
 4. **시트 공유**: 위 서비스계정 이메일에 편집자 권한
 5. **Anthropic API 키**: console.anthropic.com에서 발급
@@ -70,7 +78,7 @@
 ## 작업 유형 (확장)
 | 유형 | 트리거 예 | 시트 반영 | 알림 |
 |---|---|---|---|
-| HUNTING_GROUND | "돌 케릭 상아탑 6층 고정", "바람방 상아탑 왓다갓다" | 셀 3행 `@사냥터` | 디스코드 |
+| HUNTING_GROUND | "돌 케릭 상아탑 6층 고정", "바람방 상아탑 왓다갓다" | Schedule `Hunting Ground` 열 | 디스코드 |
 | SCHEDULE_LEDGER | "24. 수 9월 23일 : 10:00 ~ 18:00 -> 삭제 / 추가 목 …" | 시프트별 추가/OFF | 디스코드 |
 | RELOGIN | "다시 로그인 부탁", "밀어냈어" | EventLog | 🔴 긴급 |
 | QUESTION | "버땅심연이 경치 더 주나요?" | EventLog(open) | 매니저 답변 요청 → 답변 오면 영업자에게 전달 |

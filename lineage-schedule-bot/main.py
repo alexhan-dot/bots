@@ -24,6 +24,8 @@ WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")  # 설정 시 텔
 
 @app.on_event("startup")
 def _init():
+    try: sheets.ensure_tabs()
+    except Exception as e: log.warning("sheet tab init skipped: %s", e)
     try: glossary.ensure_tab()
     except Exception as e: log.warning("glossary tab init skipped: %s", e)
 
@@ -80,6 +82,9 @@ async def handle_update(update: dict):
     # 2.5) 관리 명령
     if text.startswith("/learn"):
         await handle_learn(chat_id, text); return
+    if text.startswith("/week"):                      # 다음 주 Schedule 행 미리 생성
+        n = sheets.rollover()
+        await tg.send(chat_id, f"다음 주 스케줄 {n}행 생성" if n else "다음 주 스케줄이 이미 있습니다."); return
     if text.startswith("/glossary"):
         rows = glossary.load(force=True)
         await tg.send(chat_id, f"용어 {len(rows)}개 등록됨. 미확인: " +
@@ -142,7 +147,7 @@ async def route_op(sales_chat_id: str, op: dict, en: str | None = None):
     else:
         # 캐릭명 자체가 없음 → 활성 캐릭터 후보 버튼
         sid = state.create(flow="schedule", sales_chat_id=sales_chat_id, op=op, en=en, status="await_char")
-        active = [m["CanonicalName"] for m in sheets.load_master() if m.get("Status") == "Active"][:8]
+        active = sheets.active_accounts("Client")[:8]
         await tg.send_buttons(sales_chat_id,
             f"어느 캐릭터 건인가요?\n{parser.summarize_kr(op).splitlines()[0]}",
             [(c, f"char|{sid}|{c}") for c in active] + [("✏️ 직접 입력", f"edit|{sid}")])
@@ -204,7 +209,8 @@ async def handle_callback(cb):
     if action == "char":                       # 캐릭 후보 선택
         if rest[0] == "__new__":
             await tg.send(chat_id, "신규 캐릭터는 아래 양식으로 보내주세요:\n"
-                          "캐릭명: / 클래스: / 서버: / MON: 08:00-16:00 / TUE: ... / SUN: OFF")
+                          "캐릭명: / 구분: 고객 또는 농장 / 클래스: / 서버: / 고객명: /\n"
+                          "MON: 08:00-16:00 / TUE: ... / SUN: OFF")
             state.delete(sid); return
         s["op"]["character"] = rest[0]
         await request_sales_confirm(s["sales_chat_id"], s["op"], s["en"])

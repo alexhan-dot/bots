@@ -1,4 +1,4 @@
-"""캐릭터명 매칭 — CharacterMaster 탭 기준. 정확일치 → 별칭 → 한글명 → 유사도"""
+"""캐릭터명 매칭 — Accounts 탭 기준. 정확일치 → 별칭 → 한글명 → 유사도"""
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from services import sheets
@@ -15,24 +15,24 @@ def _norm(s: str) -> str:
 def match(raw: str) -> MatchResult:
     if not raw:
         return MatchResult("none")
-    master = sheets.load_master()     # [{CanonicalName, KoreanName, Aliases, Status, ...}]
+    master = sheets.load_master()     # [{Account, Type, KoreanName, Aliases, Status, ...}]
     n = _norm(raw)
 
     # 1. 정확일치 (정식명/한글명/별칭)
     for row in master:
-        names = [row["CanonicalName"], row.get("KoreanName", "")] + \
+        names = [row["Account"], row.get("KoreanName", "")] + \
                 (row.get("Aliases", "").split("|") if row.get("Aliases") else [])
         if any(_norm(x) == n for x in names if x):
-            return MatchResult("exact", canonical=row["CanonicalName"])
+            return MatchResult("exact", canonical=row["Account"])
 
     # 2. 유사도 (0.75 이상 후보 최대 3개)
     scored = []
     for row in master:
-        names = [row["CanonicalName"], row.get("KoreanName", "")] + \
+        names = [row["Account"], row.get("KoreanName", "")] + \
                 (row.get("Aliases", "").split("|") if row.get("Aliases") else [])
         best = max((SequenceMatcher(None, n, _norm(x)).ratio() for x in names if x), default=0)
         if best >= 0.75:
-            scored.append((best, row["CanonicalName"]))
+            scored.append((best, row["Account"]))
     scored.sort(reverse=True)
     if len(scored) == 1 and scored[0][0] >= 0.92:
         return MatchResult("exact", canonical=scored[0][1])

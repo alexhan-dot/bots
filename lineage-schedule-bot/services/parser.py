@@ -9,7 +9,8 @@ SYSTEM_BASE = """당신은 리니지 클래식 부스팅(대리육성) 운영팀
 영업자 그룹 채팅에 올라온 한글 메시지(대화체, 은어, 고객 SMS 스크린샷 텍스트 포함)를 JSON으로 변환하세요.
 
 ## 작업 유형(type) — 하나의 메시지에 여러 작업이면 "ops" 배열로 모두 추출
-- NEW_CHARACTER: 신규 캐릭터 등록. character_raw, class, server, block(Client/Farming),
+- NEW_CHARACTER: 신규 캐릭터 등록. character_raw, class, server, customer(고객명, 있으면),
+  block: "Client"(고객 계정, 기본) | "Farming"(농장 계정 — "농장/파밍/farming"이라고 한 경우만),
   schedule={MON..SUN: [{"time":"HH:MM-HH:MM"}] | "OFF"}, missing[누락 요일]
 - SCHEDULE_LEDGER: "24. 수 9월 23일 : 10:00 ~ 18:00 (8시간)" 식 장부. 각 줄을 entries로:
   {date, time, kind: "base"|"extra", action: "keep"|"delete"} ("-> 삭제"면 delete, "추가"면 extra)
@@ -90,7 +91,8 @@ def summarize_kr(op: dict) -> str:
     if t == "NEW_CHARACTER":
         sched = op.get("schedule", {})
         days = "\n".join(f"  {d}: {v if isinstance(v,str) else ', '.join(s['time'] for s in v)}" for d, v in sched.items())
-        return f"작업: 신규 등록\n캐릭터: {ch} ({op.get('class','?')})\n서버: {op.get('server','?')} / 블록: {op.get('block','?')}\n주간 스케줄:\n{days}"
+        kind = "농장" if str(op.get("block", "")).lower().startswith("farm") else "고객"
+        return f"작업: 신규 등록 [{kind} 계정]\n캐릭터: {ch} ({op.get('class','?')})\n서버: {op.get('server','?')} / 고객: {op.get('customer') or '-'}\n주간 스케줄:\n{days}"
     if t == "SCHEDULE_LEDGER":
         lines = "\n".join(f"  {e['date']} {e['time']} [{e['kind']}] {'❌삭제' if e['action']=='delete' else '유지'}" for e in op.get("entries", []))
         return f"작업: 스케줄 장부 반영\n캐릭터: {ch}\n{lines}"
