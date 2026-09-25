@@ -1,0 +1,29 @@
+﻿Term,Variants,KoreanFull,English,Category,Verified
+바람방,바람 방|바람의방,바람방,Windroom,hunting_ground,Y
+상아탑,상탑|상아탑 N층,상아탑,Ivory Tower (floor N = N층),hunting_ground,Y
+버땅,버림받은땅|버림받은 땅,버림받은 땅,Forsaken Land (버땅),hunting_ground,N
+버땅심연,버땅 심연|심연,버림받은 땅 심연,Forsaken Land – Abyss,hunting_ground,N
+잊섬,잊혀진섬|잊혀진 섬,잊혀진 섬,Forgotten Island,hunting_ground,N
+개미굴,개미|ant,개미굴,Ant Cave (ant),hunting_ground,N
+몰이,몰이사냥,몰이 사냥,mob luring / pulling,action,Y
+고정,,사냥터 고정,stay fixed at (one hunting ground),action,Y
+왓다갓다,왔다갔다|왔다 갔다|번갈아,번갈아 이동,alternate between,action,Y
+두타임,두 타임|2타임,2개 시프트,both shifts (2 shifts),schedule,Y
+한타임,한 타임|1타임,1개 시프트,one shift,schedule,Y
+점검,서버점검,서버 점검,server maintenance,schedule,Y
+삭제,취소,시프트 삭제,cancel / remove shift,schedule,Y
+추가,,시프트 추가,add extra shift,schedule,Y
+경치,경험치|경험,경험치,EXP,stat,Y
+카오,카오틱,카오틱 상태,chaotic (PK) status,status,Y
+껐습니다,껐어요|종료|나왔어요|미리 나왔어요|접종,접속 종료,logged out (character is free to log in),status,Y
+밀어냈어,밀렸어|튕김|튕겼어,접속 끊김,got kicked / disconnected,status,Y
+재접,재로그인|다시 로그인,다시 로그인,re-login,action,Y
+혈원,혈맹원,혈맹원,clan member,people,Y
+육성,육성친구|대리,대리 육성 담당자,booster / leveling trainer,people,Y
+군주,프린스,군주,Prince (class),class,Y
+데나,데스나이트|드가,데스나이트,Death Knight (class),class,Y
+기사,나이트,기사,Knight (class),class,Y
+요정,엘프,요정,Elf (class),class,Y
+법사,마법사|위자드,마법사,Wizard (class),class,Y
+GY,그야|그레이브야드|새벽,24:00-08:00 시프트,graveyard shift (24:00-08:00),schedule,Y
+지피방,,(확인 필요),(unknown — verify),unknown,N
