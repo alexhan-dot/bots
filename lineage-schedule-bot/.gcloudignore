@@ -1,0 +1,7 @@
+# gcloud run deploy --source 업로드 제외 목록 (env.yaml은 --env-vars-file로만 전달)
+env.yaml
+.git
+.gitignore
+__pycache__/
+*.pyc
+.venv/

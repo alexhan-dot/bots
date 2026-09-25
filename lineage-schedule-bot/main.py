@@ -2,7 +2,7 @@
 Lineage Schedule Bot — Cloud Run entrypoint
 Flows:
   A) 영업자 스케줄 요청 (텔레그램, 한글) → 번역/파싱 → 캐릭명 매칭 → 컨펌 → 시트 반영
-     → 디스코드/왓츠앱 알림 → 매니저 컨펌 → 영업자에게 확정 회신
+     → 디스코드 알림 → 매니저 컨펌 → 영업자에게 확정 회신
   B) 카카오톡 전달 메시지 (텍스트/이미지/음성) → 변환 → 한/영 트레이너 메시지 초안
      → 대표 컨펌 → 트레이너 채널 발송
 """
@@ -18,7 +18,8 @@ log = logging.getLogger("bot")
 app = FastAPI()
 
 ADMIN_CHAT_ID = os.environ["ADMIN_CHAT_ID"]          # 대표(컨펌 담당) 텔레그램 chat_id
-SALES_CHAT_IDS = set(os.environ.get("SALES_CHAT_IDS", "").split(","))  # 영업자 chat_id 목록
+SALES_CHAT_IDS = {x.strip() for x in os.environ.get("SALES_CHAT_IDS", "").split(",") if x.strip()}  # 영업자 chat_id 목록
+WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")  # 설정 시 텔레그램 헤더로 발신 검증
 
 
 @app.on_event("startup")
@@ -36,16 +37,33 @@ def healthz():
 # ─────────────────────────────────────────────
 @app.post("/telegram/webhook")
 async def telegram_webhook(req: Request):
+    if WEBHOOK_SECRET and req.headers.get("X-Telegram-Bot-Api-Secret-Token") != WEBHOOK_SECRET:
+        return Response(status_code=401)
     update = await req.json()
+    # 텔레그램은 200을 못 받으면 같은 update를 재전송 → 중복 처리 방지
+    if "update_id" in update and not state.mark_seen(f"tg:{update['update_id']}"):
+        return Response(status_code=200)
+    try:
+        await handle_update(update)
+    except Exception as e:
+        # 예외로 500을 돌려주면 텔레그램이 무한 재시도하므로 기록 후 사용자에게 알리고 200 반환
+        log.exception("update 처리 실패: %s", e)
+        chat = (update.get("message") or (update.get("callback_query") or {}).get("message") or {}).get("chat")
+        if chat:
+            try: await tg.send(str(chat["id"]), f"⚠️ 처리 중 오류가 발생했습니다 ({type(e).__name__}). 관리자에게 문의해주세요.")
+            except Exception: pass
+    return Response(status_code=200)
 
+
+async def handle_update(update: dict):
     # 1) 버튼(callback) 처리: 승인/수정/후보선택
     if "callback_query" in update:
         await handle_callback(update["callback_query"])
-        return Response(status_code=200)
+        return
 
     msg = update.get("message")
     if not msg:
-        return Response(status_code=200)
+        return
 
     chat_id = str(msg["chat"]["id"])
 
@@ -53,32 +71,32 @@ async def telegram_webhook(req: Request):
     if "photo" in msg or "voice" in msg or "audio" in msg or "document" in msg:
         text = await media.extract_text(msg)          # STT / Vision
         await start_kakao_flow(chat_id, text, source_kind=media.kind_of(msg))
-        return Response(status_code=200)
+        return
 
     text = (msg.get("text") or "").strip()
     if not text:
-        return Response(status_code=200)
+        return
 
     # 2.5) 관리 명령
     if text.startswith("/learn"):
-        await handle_learn(chat_id, text); return Response(status_code=200)
+        await handle_learn(chat_id, text); return
     if text.startswith("/glossary"):
         rows = glossary.load(force=True)
         await tg.send(chat_id, f"용어 {len(rows)}개 등록됨. 미확인: " +
-                      ", ".join(r["Term"] for r in rows if r.get("Verified") != "Y")); return Response(status_code=200)
+                      ", ".join(r["Term"] for r in rows if r.get("Verified") != "Y")); return
 
     # 3) 수정 지시 답장 (pending 상태에서 텍스트 수신)
     pending = state.get_pending_by_editor(chat_id)
     if pending:
         await apply_edit(pending, text)
-        return Response(status_code=200)
+        return
 
     # 4) 영업자 스케줄 요청 → Flow A / 그 외 텍스트(카톡 복붙) → Flow B
     if chat_id in SALES_CHAT_IDS:
         await start_schedule_flow(chat_id, text)
     else:
         await start_kakao_flow(chat_id, text, source_kind="text")
-    return Response(status_code=200)
+    return
 
 
 # ─────────────────────────────────────────────
@@ -98,30 +116,38 @@ async def start_schedule_flow(sales_chat_id: str, text_kr: str):
         return
 
     for op in ops:
-        en = await translate.kr_to_en(parser.summarize_kr(op))
-        if op["type"] == "INFO":                      # 기록만, 알림 없음
-            sheets.apply(op); continue
+        await route_op(sales_chat_id, op)
 
-        match = matcher.match(op.get("character_raw") or "")
-        if match.kind == "exact":
-            op["character"] = match.canonical
-        elif match.kind == "ambiguous" or (match.kind == "none" and op.get("character_raw")):
-            sid = state.create(flow="schedule", sales_chat_id=sales_chat_id, op=op, en=en, status="await_char")
-            cands = match.candidates if match.kind == "ambiguous" else []
-            await tg.send_buttons(sales_chat_id,
-                f"캐릭터명 확인: '{op.get('character_raw')}'\n({parser.summarize_kr(op).splitlines()[0]})",
-                [(c, f"char|{sid}|{c}") for c in cands] +
-                [("➕ 신규 캐릭터", f"char|{sid}|__new__"), ("✏️ 직접 입력", f"edit|{sid}")])
-            continue
-        elif match.kind == "none" and op["type"] != "NEW_CHARACTER":
-            # 캐릭명 자체가 없음 → 활성 캐릭터 후보 버튼
-            sid = state.create(flow="schedule", sales_chat_id=sales_chat_id, op=op, en=en, status="await_char")
-            active = [m["CanonicalName"] for m in sheets.load_master() if m.get("Status") == "Active"][:8]
-            await tg.send_buttons(sales_chat_id,
-                f"어느 캐릭터 건인가요?\n{parser.summarize_kr(op).splitlines()[0]}",
-                [(c, f"char|{sid}|{c}") for c in active] + [("✏️ 직접 입력", f"edit|{sid}")])
-            continue
-        await request_sales_confirm(sales_chat_id, op, en)
+
+async def route_op(sales_chat_id: str, op: dict, en: str | None = None):
+    """op 하나를 캐릭명 매칭 후 영업자 컨펌 단계로 보냄 (애매하면 후보 버튼)"""
+    en = en or await translate.kr_to_en(parser.summarize_kr(op))
+    if op["type"] == "INFO":                      # 기록만, 알림 없음
+        sheets.apply(op); return
+
+    match = matcher.match(op.get("character") or op.get("character_raw") or "")
+    if match.kind == "exact":
+        op["character"] = match.canonical
+    elif op["type"] == "NEW_CHARACTER" and op.get("character_raw"):
+        # 신규 등록은 마스터에 없는 게 정상 → 입력한 이름 그대로 사용
+        op["character"] = op["character_raw"]
+    elif match.kind == "ambiguous" or (match.kind == "none" and op.get("character_raw")):
+        sid = state.create(flow="schedule", sales_chat_id=sales_chat_id, op=op, en=en, status="await_char")
+        cands = match.candidates if match.kind == "ambiguous" else []
+        await tg.send_buttons(sales_chat_id,
+            f"캐릭터명 확인: '{op.get('character_raw')}'\n({parser.summarize_kr(op).splitlines()[0]})",
+            [(c, f"char|{sid}|{c}") for c in cands] +
+            [("➕ 신규 캐릭터", f"char|{sid}|__new__"), ("✏️ 직접 입력", f"edit|{sid}")])
+        return
+    else:
+        # 캐릭명 자체가 없음 → 활성 캐릭터 후보 버튼
+        sid = state.create(flow="schedule", sales_chat_id=sales_chat_id, op=op, en=en, status="await_char")
+        active = [m["CanonicalName"] for m in sheets.load_master() if m.get("Status") == "Active"][:8]
+        await tg.send_buttons(sales_chat_id,
+            f"어느 캐릭터 건인가요?\n{parser.summarize_kr(op).splitlines()[0]}",
+            [(c, f"char|{sid}|{c}") for c in active] + [("✏️ 직접 입력", f"edit|{sid}")])
+        return
+    await request_sales_confirm(sales_chat_id, op, en)
 
 
 async def ask_term_meaning(chat_id: str, terms: list[str]):
@@ -196,7 +222,15 @@ async def handle_callback(cb):
         await tg.send(chat_id, "수정할 내용을 답장으로 보내주세요.")
 
     elif action == "ok" and s["flow"] == "schedule":
-        op = s["op"]; result = sheets.apply(op)
+        if s.get("status") != "await_sales_confirm":   # 중복 클릭·지난 버튼 → 시트 이중 반영 방지
+            await tg.answer_callback(cb["id"], "이미 처리된 요청입니다."); return
+        state.update(sid, status="applying")
+        op = s["op"]
+        try:
+            result = sheets.apply(op)
+        except Exception:
+            state.update(sid, status="await_sales_confirm")   # 실패 시 다시 ✅ 누를 수 있게
+            raise
         if op["type"] == "QUESTION":
             state.update(sid, status="await_answer", sheet_result=result)
             msg = f"❓ **Customer question** — {op.get('character','')}\n{s['en']}\nReply with the answer: {notify.BOT_BASE_URL}/answer?sid={sid}"
@@ -219,6 +253,9 @@ async def handle_callback(cb):
                       f"✅ 확정 완료\n{parser.summarize_kr(s['op'])}\n매니저 컨펌이 완료되었습니다.")
 
     elif action == "ok" and s["flow"] == "kakao":
+        if s.get("status") != "await_confirm":
+            await tg.answer_callback(cb["id"], "이미 처리된 요청입니다."); return
+        state.update(sid, status="sending")
         await notify.send_to_trainers(s["draft_en"], s["draft_kr"])
         if s.get("kakao_user_key"):
             await kakao.send_text(s["kakao_user_key"], f"확인 완료 — 담당 트레이너에게 전달했습니다.\n\n{s['draft_kr']}")
@@ -246,10 +283,12 @@ async def apply_edit(pending, edit_text):
         await tg.send(s.get("editor_chat_id") or ADMIN_CHAT_ID, f"{len(s['cands'])-len(skip)}개 등록 (미확인 표시). /glossary 로 확인")
         state.delete(sid); return
     if s["flow"] == "schedule":
-        s["op"] = await parser.revise(s["op"], edit_text)
-        s["en"] = await translate.kr_to_en(parser.summarize_kr(s["op"]))
-        state.update(sid, op=s["op"], en=s["en"])
-        await request_sales_confirm(s["sales_chat_id"], s["op"], s["en"])
+        op = await parser.revise(s["op"], edit_text)
+        if op.get("character_raw") != s["op"].get("character_raw"):
+            op.pop("character", None)          # 캐릭명이 바뀌었으면 다시 매칭
+        state.delete(sid)                      # 이전 버튼 무효화 (새 sid로 재컨펌)
+        await route_op(s["sales_chat_id"], op)
+        return
     else:
         kr, en = await translate.revise_draft(s["draft_kr"], s["draft_en"], edit_text)
         state.update(sid, draft_kr=kr, draft_en=en)

@@ -3,7 +3,7 @@
 ## 워크플로우
 - **Flow A (스케줄)**: 영업자 텔레그램(한글) → 파싱·번역 → 캐릭명 매칭(마스터 기준, 애매하면 후보 버튼)
   → 영업자 컨펌 → 시트 반영 → 디스코드 알림 → 매니저 컨펌(링크 클릭) → 영업자에게 확정 회신
-- **Flow B (카카오톡, 완전 자동)**: 영업자가 카카오톡 채널로 메시지(텍스트/이미지/음성) 발송
+- **Flow B (카카오톡, ⏸ 보류 — 사업자 인증 문제로 TALKBRIDGE_* 비워둠)**: 영업자가 카카오톡 채널로 메시지(텍스트/이미지/음성) 발송
   → TalkBridge 웹훅 신호 → 봇이 본문 조회 → 첨부는 Vision/STT 변환 → 영업자에게 "접수" 자동 회신
   → 트레이너용 한/영 초안을 대표 텔레그램으로 → 승인/수정 → 트레이너 채널 발송 + 영업자에게 카톡 확정 회신
   - 텔레그램으로 직접 전달(복붙/공유)해도 동일하게 처리됨 (백업 경로)
@@ -27,13 +27,13 @@
 1. **텔레그램 봇**: @BotFather → /newbot → 토큰 확보. 대표/영업자 chat_id는 @userinfobot으로 확인
 2. **시트 준비**: `data/character_master.csv`를 `CharacterMaster` 탭으로 가져오기(파일 > 가져오기)
    - ⚠️ 계정 비밀번호 탭은 별도 시트로 분리 권장 (봇 서비스계정 접근 범위 밖으로)
-3. **시트 공유**: Cloud Run 서비스계정 이메일(기본: `PROJECT_NUMBER-compute@developer.gserviceaccount.com`)에 편집자 권한
-4. **Firestore**: 콘솔에서 Native 모드로 생성 (이미 있으면 생략)
+3. **서비스계정·Firestore**: `WORK_ORDER.md` Phase 2 명령으로 `lineage-bot@<PROJECT_ID>.iam.gserviceaccount.com` 생성 + Firestore(Native) 생성
+4. **시트 공유**: 위 서비스계정 이메일에 편집자 권한
 5. **Anthropic API 키**: console.anthropic.com에서 발급
 6. **디스코드**: 채널 설정 > 연동 > 웹훅 생성 → URL
-   템플릿 `schedule_update` (body 변수 {{1}} 1개) 등록·승인 → 토큰/Phone ID 확보
-7. **카카오 상담톡 (TalkBridge)** — 아래 별도 섹션
-8. **배포**: 환경변수 export 후 `./deploy.sh` → 출력되는 `/kakao/webhook` URL을 톡브릿지 센터에 등록
+7. **env.yaml**: `cp env.yaml.example env.yaml` 후 값 채우기 (커밋 금지). `TELEGRAM_WEBHOOK_SECRET`에 임의 문자열을 넣으면 위조 요청 차단
+8. **배포**: `bash deploy.sh` → 출력된 URL을 env.yaml `BOT_BASE_URL`에 넣고 한 번 더 `bash deploy.sh`
+9. (보류) **카카오 상담톡 (TalkBridge)** — 아래 별도 섹션. 활성화 시 `/kakao/webhook` URL을 톡브릿지 센터에 등록
 
 ## 카카오 상담톡 설정 (TalkBridge 개발자 모드)
 1. **카카오톡 채널 개설** — https://center-pf.kakao.com (검색용 아이디 정하기)

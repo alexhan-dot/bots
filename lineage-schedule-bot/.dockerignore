@@ -1,4 +1,7 @@
 env.yaml
+.git
+.gitignore
 __pycache__/
 *.pyc
 .venv/
+WORK_ORDER.md

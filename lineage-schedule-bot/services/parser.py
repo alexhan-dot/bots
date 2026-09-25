@@ -47,8 +47,20 @@ async def _claude(user: str, system: str) -> dict:
             json={"model": MODEL, "max_tokens": 2500, "system": system,
                   "messages": [{"role": "user", "content": user}]})
         r.raise_for_status()
-        txt = r.json()["content"][0]["text"]
-        return json.loads(txt.replace("```json", "").replace("```", "").strip())
+        return extract_json(r.json()["content"][0]["text"])
+
+def extract_json(txt: str):
+    """모델 출력에서 JSON 부분만 추출 (코드펜스·앞뒤 설명문 허용)"""
+    txt = txt.replace("```json", "").replace("```", "").strip()
+    try:
+        return json.loads(txt)
+    except json.JSONDecodeError:
+        starts = [i for i in (txt.find("{"), txt.find("[")) if i >= 0]
+        if not starts:
+            raise
+        start = min(starts)
+        end = txt.rfind("}" if txt[start] == "{" else "]")
+        return json.loads(txt[start:end + 1])
 
 async def parse(text_kr: str, message_time: str = "") -> dict:
     """반환: {"ops":[op,...], "unknown_terms":[...], "confidence":..}"""

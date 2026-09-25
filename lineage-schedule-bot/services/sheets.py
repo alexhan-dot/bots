@@ -26,7 +26,7 @@ _master_cache = {"ts": None, "rows": []}
 
 def load_master(force=False) -> list[dict]:
     now = datetime.datetime.utcnow()
-    if not force and _master_cache["ts"] and (now - _master_cache["ts"]).seconds < 300:
+    if not force and _master_cache["ts"] and (now - _master_cache["ts"]).total_seconds() < 300:
         return _master_cache["rows"]
     ws = _book().worksheet(MASTER_TAB)
     rows = ws.get_all_records()

@@ -1,6 +1,7 @@
 """Claude API — 번역, 초안 작성, 수정 반영"""
 import os, httpx, json
 from services import glossary
+from services.parser import extract_json
 
 API_KEY = os.environ["ANTHROPIC_API_KEY"]
 MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
@@ -27,7 +28,7 @@ async def draft_trainer_message(source: str) -> tuple[str, str]:
         "message (Korean). Return JSON only: {\"kr\": \"한글 안내문\", \"en\": \"English version\"}. "
         "Be concise and action-oriented. Keep names/times verbatim. Use glossary English terms.\n\n"
         + glossary.prompt_block(), source)
-    d = json.loads(out.replace("```json", "").replace("```", ""))
+    d = extract_json(out)
     return d["kr"], d["en"]
 
 async def revise_draft(kr: str, en: str, instruction: str) -> tuple[str, str]:
@@ -35,7 +36,7 @@ async def revise_draft(kr: str, en: str, instruction: str) -> tuple[str, str]:
         "Revise the following KR/EN draft per the instruction. "
         "Return JSON only: {\"kr\": ..., \"en\": ...}.",
         f"[KR]\n{kr}\n[EN]\n{en}\n[수정 지시]\n{instruction}")
-    d = json.loads(out.replace("```json", "").replace("```", ""))
+    d = extract_json(out)
     return d["kr"], d["en"]
 
 async def en_to_kr(text: str) -> str:

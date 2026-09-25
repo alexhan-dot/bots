@@ -8,7 +8,7 @@ _cache = {"ts": None, "rows": []}
 
 def load(force=False) -> list[dict]:
     now = datetime.datetime.utcnow()
-    if not force and _cache["ts"] and (now - _cache["ts"]).seconds < 300:
+    if not force and _cache["ts"] and (now - _cache["ts"]).total_seconds() < 300:
         return _cache["rows"]
     try:
         ws = sheets._book().worksheet(TAB)

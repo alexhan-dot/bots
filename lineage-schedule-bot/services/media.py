@@ -22,11 +22,11 @@ async def extract_text(msg: dict) -> str:
     if "document" in msg:
         url = await tg.get_file_url(msg["document"]["file_id"])
         mime = msg["document"].get("mime_type", "")
-        if mime.startswith("image/"): return await _image_to_text(url)
+        if mime.startswith("image/"): return await _image_to_text(url, mime)
         if mime.startswith("audio/"): return await _speech_to_text(url)
     return "(지원하지 않는 형식)"
 
-async def _image_to_text(url: str) -> str:
+async def _image_to_text(url: str, media_type: str = "image/jpeg") -> str:
     async with httpx.AsyncClient(timeout=60) as c:
         img = (await c.get(url)).content
     b64 = base64.b64encode(img).decode()
@@ -36,7 +36,7 @@ async def _image_to_text(url: str) -> str:
             json={"model": MODEL, "max_tokens": 1500, "messages": [{
                 "role": "user", "content": [
                     {"type": "image", "source": {"type": "base64",
-                     "media_type": "image/jpeg", "data": b64}},
+                     "media_type": media_type, "data": b64}},
                     {"type": "text", "text":
                      "이 이미지의 내용을 읽어주세요. 카카오톡 대화 스크린샷이면 대화 내용을 "
                      "그대로 옮기고, 그 외 이미지면 핵심 내용을 한글로 설명하세요."}]}]})
@@ -66,7 +66,9 @@ async def from_kakao_text(text: str) -> tuple[str, str]:
     from services import kakao
     kind = kakao.attachment_kind(text)
     if kind == "image":
-        return await _image_to_text(text.strip()), "image"
+        ext = text.strip().rsplit(".", 1)[-1].lower()
+        mt = {"png": "image/png", "gif": "image/gif", "webp": "image/webp"}.get(ext, "image/jpeg")
+        return await _image_to_text(text.strip(), mt), "image"
     if kind == "voice":
         return await _speech_to_text(text.strip()), "voice"
     if kind in ("video", "file"):
