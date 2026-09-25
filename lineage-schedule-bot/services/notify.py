@@ -11,7 +11,9 @@ BOT_BASE_URL = os.environ.get("BOT_BASE_URL", "")
 BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
 REQUESTS_CH = os.environ.get("DISCORD_REQUESTS_CHANNEL_ID", "")    # 영업 요청 카드
 LOG_CH = os.environ.get("DISCORD_LOG_CHANNEL_ID", "")              # 봇 기록 (OT·플랜 저장 등)
-URGENT_ROLE = os.environ.get("DISCORD_URGENT_ROLE_ID", "")         # 긴급(재접속) 때 멘션할 역할
+URGENT_ROLE = os.environ.get("DISCORD_URGENT_ROLE_ID", "")         # 긴급(재접속)·컨펌 알림 때 멘션할 역할
+CONFIRM_CH = os.environ.get("DISCORD_CONFIRM_CHANNEL_ID", "")      # #schedule-confirm — 일별·주별 컨펌 카드
+REPORTS_CH = os.environ.get("DISCORD_REPORTS_CHANNEL_ID", "")      # #shift-reports — 플레이어 스크린샷 기록
 API = "https://discord.com/api/v10"
 GREEN, RED, GREY, BLUE = 3, 4, 2, 1
 

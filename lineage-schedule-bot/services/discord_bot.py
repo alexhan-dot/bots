@@ -54,6 +54,10 @@ COMMANDS = [
     {"name": "log", "description": "Free-text note — AI fills the form, you confirm", "options": [
         _o("text", S, "e.g. Reno 2h OT on Jjuni last night, boss fight", True)]},
     {"name": "week", "description": "Create next week's schedule rows now"},
+    {"name": "check", "description": "Post a confirmation card now (daily or weekly schedule check)", "options": [
+        {"name": "kind", "type": S, "description": "day or week", "required": True,
+         "choices": [{"name": "Today / a day", "value": "day"}, {"name": "Next week", "value": "week"}]},
+        _o("date", S, "Day (default today) or any date in the week (default next week)")]},
     {"name": "plan", "description": "Apply a schedule for a date range (Planner tab, or one rule here)", "options": [
         _o("from", S, "First date, e.g. 10-01 (default: each Planner row's From)"),
         _o("to", S, "Last date, e.g. 10-31 (default: each Planner row's To)"),
@@ -153,6 +157,9 @@ async def _command(p, uid, name, bg) -> dict:
     if cmd == "week":
         bg.add_task(_run_week, p["token"])
         return {"type": 5, "data": {"flags": EPHEMERAL}}
+    if cmd == "check":
+        bg.add_task(_run_check, p["token"], o.get("kind", "day"), o.get("date"))
+        return {"type": 5, "data": {"flags": EPHEMERAL}}
     if cmd == "plan":
         bg.add_task(_run_plan_preview, p["token"], _plan_inputs(o), uid)
         return {"type": 5, "data": {"flags": EPHEMERAL}}         # 시트 읽기 → 미리보기는 백그라운드
@@ -168,6 +175,8 @@ def _component(p, uid, name, bg) -> dict:
     action, sid = p["data"]["custom_id"].split("|", 1)
     if action.startswith("req_"):                                # 텔레그램 영업 요청 카드 버튼 (누구나 매니저면 처리)
         return _request_component(action, sid, name, bg)
+    if action.startswith("conf_"):                               # 일별·주별 컨펌 카드
+        return _confirm_component(p, action, sid, name, bg)
     s = state.get(sid)
     if not s:
         return {"type": 7, "data": {"content": "This request expired. Run the command again.", "embeds": [], "components": []}}
@@ -351,6 +360,47 @@ async def _tell_sales(s: dict, kind: str, manager_name: str, text: str):
         await tg.send(chat, msg)
     except Exception:
         log.exception("telegram relay failed")
+
+
+# ── 일별·주별 컨펌 ──────────────────────────────
+def _confirm_component(p, action: str, period: str, name: str, bg) -> dict:
+    from services import confirm
+    kind = "week" if action.endswith("week") else "day"
+    if action.startswith("conf_refresh"):
+        embed = confirm.day_card(period) if kind == "day" else confirm.week_card(period)
+        return {"type": 7, "data": confirm.card_payload(kind, period, embed)}
+    old = ((p.get("message") or {}).get("embeds") or [{}])[0]
+    bg.add_task(_run_confirm, kind, period, name)
+    return {"type": 7, "data": {**confirm.card_payload(kind, period, old, done_by=name), "content": ""}}
+
+
+async def _run_confirm(kind: str, period: str, name: str):
+    from services import confirm
+    try:
+        confirm.confirm(kind, period, name)
+        line = f"✅ {'Day' if kind == 'day' else 'Week'} {period} confirmed by {name}"
+        await notify.log_line(line)
+    except Exception:
+        log.exception("confirm failed")
+
+
+async def _run_check(token: str, kind: str, date: str | None):
+    from services import confirm
+    try:
+        d = manager.parse_date(date) if date else None
+        if kind == "week":
+            base = datetime.date.fromisoformat(d) if d else clock.today() + datetime.timedelta(days=7)
+            period = sheets.week_start(base).isoformat()
+            sheets.rollover(datetime.date.fromisoformat(period))       # 없으면 지난주 복사(플레이어 유지)
+            index.invalidate()
+        else:
+            period = d or clock.today().isoformat()
+        ok = await confirm.post(kind, period)
+        await _edit(token, {"content": f"✅ Posted the {kind} check for {period}." if ok else
+                            "❌ No confirm channel. Run tools/setup_discord.py again and redeploy."})
+    except Exception as e:
+        log.exception("check failed")
+        await _edit(token, {"content": f"❌ Failed: {e}"})
 
 
 # ── 백그라운드 작업 (응답 후) ──────────────────

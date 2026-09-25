@@ -104,6 +104,12 @@ def _ensure_settings(book, titles):
     """Settings 탭(정기점검 시간)과 Planner 탭이 없으면 만듦 — 값이 이미 있으면 건드리지 않음"""
     if SETTINGS_TAB not in titles:
         book.add_worksheet(SETTINGS_TAB, rows=20, cols=3).update(values=SETTINGS_ROWS, range_name="A1")
+    else:                                               # 새로 생긴 설정 줄만 뒤에 추가 (기존 값 유지)
+        ws = book.worksheet(SETTINGS_TAB)
+        have = {str(r[0]).strip() for r in ws.get("A1:A30") if r}
+        new = [r for r in SETTINGS_ROWS[1:] if r[0] not in have]
+        if new:
+            ws.append_rows(new, table_range="A1")
     if PLANNER_TAB not in titles:
         book.add_worksheet(PLANNER_TAB, rows=500, cols=len(PLANNER_COLS)).update(
             values=[PLANNER_COLS] + PLANNER_EXAMPLE, range_name="A1")
@@ -396,14 +402,27 @@ class Schedule:
         shift = sunday - src
         accounts = {r["Account"]: r for r in load_master() if r.get("Status") == "Active"
                     and not ((_until(r) or datetime.date.max) < sunday)}      # 기간 끝난 계정 제외
+        # 고객 계정 플레이어: 같은 계정·슬롯·요일에 가장 최근(최대 3주)에 들어갔던 플레이어 (초안 주처럼 비어 있어도 유지)
+        recent = {}
+        lo = (sunday - datetime.timedelta(days=21)).isoformat()
+        for _, r in sorted(self.rows, key=lambda x: x[1]["Date"]):
+            if lo <= r["Date"] < sunday.isoformat() and str(r.get("Player", "")).strip() and r["Time"] != "OFF":
+                wd = datetime.date.fromisoformat(r["Date"]).weekday()
+                recent[(r["Account"], r["Slot"], wd, r["Time"])] = r["Player"]
+                recent[(r["Account"], r["Slot"], wd)] = r["Player"]
         n = 0
         for _, r in sorted(self.week(src), key=lambda x: (x[1]["Date"], x[1]["Account"], x[1]["Slot"])):
-            if r["Account"] not in accounts:
-                continue
+            if r["Account"] not in accounts or str(r["Time"]).strip() in ("", "OFF"):
+                continue                                    # OFF 는 복사하지 않음 (보드가 깔끔하게)
             d = datetime.date.fromisoformat(r["Date"]) + shift
-            self.add(Date=d.isoformat(), Type=accounts[r["Account"]].get("Type") or r["Type"],
-                     Account=r["Account"], Slot=r["Slot"], Time=r["Time"] or "OFF",
-                     **{"Hunting Ground": r.get("Hunting Ground", "")})
+            type_ = accounts[r["Account"]].get("Type") or r["Type"]
+            # 고객 계정은 지난주 플레이어를 그대로 유지 (매니저가 주간 컨펌에서 확인). 농장은 비움
+            wd = d.weekday()
+            player = (str(r.get("Player", "")).strip() or recent.get((r["Account"], r["Slot"], wd, r["Time"]))
+                      or recent.get((r["Account"], r["Slot"], wd), "")) if type_ == "Client" else ""
+            self.add(Date=d.isoformat(), Type=type_, Account=r["Account"], Slot=r["Slot"], Time=r["Time"],
+                     Player=player, **{"Hunting Ground": r.get("Hunting Ground", "")},
+                     Note="copied — confirm")
             n += 1
         return n
 

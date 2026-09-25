@@ -42,6 +42,8 @@ def _init():
     except Exception as e: log.warning("housekeep skipped: %s", e)
     if discord_bot.PUBLIC_KEY:
         index.warm()                                   # 디스코드 첫 요청이 시트를 기다리지 않도록
+    from services import confirm
+    confirm.start()                                    # 일별·주별 컨펌 알림 (디스코드 채널이 있을 때)
     try: glossary.ensure_tab()
     except Exception as e: log.warning("glossary tab init skipped: %s", e)
 

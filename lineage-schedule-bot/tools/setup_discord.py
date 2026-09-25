@@ -19,6 +19,8 @@ CHANNELS = {   # 이름 → (용도, env 키)
     "sales-requests": ("Sales requests from Telegram — Confirm / Reply / Schedule buttons", "DISCORD_REQUESTS_CHANNEL_ID"),
     "manager-desk": ("Managers: /schedule /ot /incentive /penalty /assign /off /extend /plan /log", None),
     "bot-log": ("Everything the bot saved (OT, incentives, plans, schedule edits)", "DISCORD_LOG_CHANNEL_ID"),
+    "schedule-confirm": ("Daily & weekly schedule checks — confirm players before the day/week starts", "DISCORD_CONFIRM_CHANNEL_ID"),
+    "shift-reports": ("Players: /shot start & end screenshots → EXP % and Adena recorded", "DISCORD_REPORTS_CHANNEL_ID"),
 }
 # 봇 권한: 채널 보기·메시지·임베드·기록 읽기·메시지 관리·역할 멘션·메시지 고정(PIN_MESSAGES) + (설정용) 채널·역할 관리
 PERMS = 1024 | 2048 | 16384 | 65536 | 8192 | 131072 | (1 << 51) | 16 | 268435456
@@ -34,6 +36,11 @@ GUIDE = """**How to use the bot** (type `/` and pick a command — names autocom
 `/ot staff hours [date] [time] [reason]` · `/incentive staff amount [date] [kpi]` · `/penalty staff hours [date] [action]`
 
 ✍️ `/log text` — write it like a message ("Reno 2h OT on Jjuni last night"), the bot fills the form.
+
+✅ **Confirmations** (#schedule-confirm)
+Every morning the bot posts today's shifts (morning first) → check players → **Confirm day**.
+Every Saturday it creates next week (client players kept from last week) → fix gaps → **Confirm week**.
+`/check kind:day` or `/check kind:week` posts a check now. Shifts over 8h are split into extra slots for another player.
 
 Every command shows a preview first → **Confirm**. Only you see the preview. Saved records go to #bot-log.
 Sales requests from Telegram arrive in #sales-requests → **✅ Confirm** / **💬 Reply** / **📋 Schedule**. The salesperson gets it in Korean."""

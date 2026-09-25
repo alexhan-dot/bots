@@ -25,7 +25,14 @@ SETTINGS_TAB = "Settings"
 SETTINGS_ROWS = [["Setting", "Value", "Note"],
                  ["Maintenance Day", "Wed", "Weekly game maintenance day (Sun/Mon/…/Sat). Blank = none"],
                  ["Maintenance Start", "05:00", "Same clock as the Schedule times"],
-                 ["Maintenance End", "09:00", "Shift hours inside this window are not counted"]]
+                 ["Maintenance End", "09:00", "Shift hours inside this window are not counted"],
+                 ["Daily Confirm Time", "07:00", "Discord #schedule-confirm: today's shifts & players to confirm"],
+                 ["Weekly Confirm Day", "Sat", "Next week is created (players kept) and sent for confirmation"],
+                 ["Weekly Confirm Time", "12:00", ""],
+                 ["Reminder After (hours)", "3", "Remind managers once if not confirmed"]]
+
+CONFIRM_TAB = "Confirmations"
+CONFIRM_COLS = ["Kind", "Period", "Status", "Posted At", "Confirmed By", "Confirmed At", "Summary"]
 
 # Planner: 매니저가 기간 단위(한 달 등)로 반복 스케줄을 적는 탭 → 디스코드 /plan 이 Schedule 에 반영
 PLANNER_TAB = "Planner"
