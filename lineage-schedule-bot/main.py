@@ -18,9 +18,20 @@ log = logging.getLogger("bot")
 
 app = FastAPI()
 
-ADMIN_CHAT_ID = os.environ["ADMIN_CHAT_ID"]          # 대표(컨펌 담당) 텔레그램 chat_id
+ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "")   # 대표(컨펌 담당) 텔레그램 chat_id — 첫 배포 후 /start 로 확인해 채움
 SALES_CHAT_IDS = {x.strip() for x in os.environ.get("SALES_CHAT_IDS", "").split(",") if x.strip()}  # 영업자 chat_id 목록
 WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")  # 설정 시 텔레그램 헤더로 발신 검증
+NAMES: dict[str, str] = {}                                     # chat_id → 텔레그램 이름 (디스코드 카드 표시용)
+
+
+def help_text(chat_id: str) -> str:
+    role = "대표(관리자)" if chat_id == ADMIN_CHAT_ID else "영업자" if chat_id in SALES_CHAT_IDS else "미등록"
+    return (f"👋 Lineage 스케줄 봇\n내 Chat ID: {chat_id}  ({role})\n\n"
+            "• 스케줄 요청은 평소 쓰던 대로 보내면 됩니다. 예)\n"
+            "  - 알렉스 내일 24:00~08:00 추가\n  - 아다 9/28 삭제\n  - 쭈니 사냥터 상아탑 7층으로 변경\n"
+            "• 버튼으로 확인(✅) → 시트 자동 반영 → 디스코드 매니저 확인 → 여기로 '확정 완료' 알림\n"
+            "• 카톡 캡처·음성도 그대로 보내면 트레이너 안내문 초안을 만듭니다\n"
+            "• /week 다음 주 스케줄 미리 만들기 · /glossary 용어 목록")
 
 
 @app.on_event("startup")
@@ -85,6 +96,17 @@ async def handle_update(update: dict):
         return
 
     chat_id = str(msg["chat"]["id"])
+    who = msg.get("from") or {}
+    NAMES[chat_id] = " ".join(x for x in (who.get("first_name"), who.get("last_name")) if x) or who.get("username") or chat_id
+
+    first = (msg.get("text") or "").strip().split(" ")[0]
+    if first in ("/start", "/id", "/help"):
+        await tg.send(chat_id, help_text(chat_id)); return
+    if chat_id not in SALES_CHAT_IDS and chat_id != ADMIN_CHAT_ID:     # 등록 안 된 사람
+        await tg.send(chat_id, f"등록되지 않은 사용자입니다. 관리자에게 아래 번호를 전달해주세요.\nChat ID: {chat_id}")
+        await tg.send(ADMIN_CHAT_ID, f"🙋 미등록 사용자 메시지: {NAMES[chat_id]} (chat_id {chat_id})\n"
+                                     f"영업자로 쓰려면 env.yaml SALES_CHAT_IDS 에 추가 후 재배포")
+        return
 
     # 2) 미디어(카카오톡 전달분: 이미지/음성) → Flow B
     if "photo" in msg or "voice" in msg or "audio" in msg or "document" in msg:
@@ -203,7 +225,7 @@ async def handle_learn(chat_id: str, text: str):
 
 
 async def request_sales_confirm(sales_chat_id, op, en):
-    sid = state.create(flow="schedule", sales_chat_id=sales_chat_id,
+    sid = state.create(flow="schedule", sales_chat_id=sales_chat_id, sales_name=NAMES.get(sales_chat_id, ""),
                        op=op, en=en, status="await_sales_confirm")
     summary = parser.summarize_kr(op)
     await tg.send_buttons(
@@ -253,21 +275,12 @@ async def handle_callback(cb):
         except Exception:
             state.update(sid, status="await_sales_confirm")   # 실패 시 다시 ✅ 누를 수 있게
             raise
-        if op["type"] == "QUESTION":
-            state.update(sid, status="await_answer", sheet_result=result)
-            msg = f"❓ **Customer question** — {op.get('character','')}\n{s['en']}\nReply with the answer: {notify.BOT_BASE_URL}/answer?sid={sid}"
-            await notify.discord(msg)
-            await tg.send(chat_id, "매니저에게 질문 전달. 답변 오면 알려드립니다.")
-        elif op["type"] == "RELOGIN":
-            state.update(sid, status="await_manager", sheet_result=result)
-            msg = f"🔴 **URGENT — re-login needed**\n{s['en']}"
-            await notify.discord(msg, buttons_sid=sid)
-            await tg.send(chat_id, "🔴 긴급 알림 발송 완료.")
-        else:
-            state.update(sid, status="await_manager", sheet_result=result)
-            text_en = notify.format_manager_msg(op, s["en"], result)
-            await notify.discord(text_en, buttons_sid=sid)
-            await tg.send(chat_id, "✅ 시트 반영 완료. 매니저 컨펌 대기 중입니다.")
+        wait = {"QUESTION": "await_answer"}.get(op["type"], "await_manager")
+        state.update(sid, status=wait, sheet_result=result)
+        await notify.send_request(sid, op, s["en"], result, s.get("sales_name", ""))
+        await tg.send(chat_id, {"QUESTION": "💬 매니저에게 질문 전달. 답변 오면 바로 알려드립니다.",
+                                "RELOGIN": "🔴 긴급 알림 발송 완료. 처리되면 알려드립니다."}.get(
+            op["type"], f"✅ 시트 반영 완료 — {result}\n매니저 확인 대기 중입니다."))
 
     elif action == "mgr_ok":                   # 매니저 컨펌 (디스코드→relay or 텔레그램)
         state.update(sid, status="done")

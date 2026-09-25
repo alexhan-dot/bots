@@ -77,7 +77,7 @@ xlsx 가져오기는 목록 수식(SORT/UNIQUE/FILTER)을 계산하지 못해 Bo
 주의: 상담톡 정식 사용 시 카카오톡 채널 관리자센터의 기존 1:1 채팅 메뉴는 비활성화됨(채팅 이력 조회 불가). 봇 웹훅이 응답 못 하면 TalkBridge가 재시도하므로 Cloud Run 최소 인스턴스 0으로 둬도 유실 없음.
 
 ## 디스코드 매니저 봇 (영어)
-시간대별 매니저가 직원 스케줄·OT·인센티브·페널티를 디스코드에서 양식으로 기록 → 봇이 스케줄을 찾아 보여줌 → **Confirm** 누르면 시트에 기록 + 채널에 공개 로그.
+시간대별 매니저가 직원 스케줄·OT·인센티브·페널티를 디스코드에서 양식으로 기록 → 봇이 스케줄을 찾아 보여줌 → **Confirm** 누르면 시트에 기록 + `#bot-log` 에 기록.
 
 | 명령 | 기록 위치 | 예 |
 |---|---|---|
@@ -87,7 +87,7 @@ xlsx 가져오기는 목록 수식(SORT/UNIQUE/FILTER)을 계산하지 못해 Bo
 | `/assign account player [date] [slot] [time]` | Schedule Player | |
 | `/off account [date] [slot] [time]` | Schedule Time=OFF (슬롯 없으면 그날 전체) | |
 | `/extend account new_time [date] [time] [slot]` | Schedule Time | |
-| `/schedule [account] [staff] [date]` | 조회만 | |
+| `/schedule [account] [staff] [date]` | 조회만 (인자 없으면 오늘 전체, 빈 자리 먼저) | |
 | `/log text` | 자유 입력 → AI가 양식으로 변환 → 같은 확인 단계 | `/log Reno 2h OT on Jjuni last night` |
 | `/week` | 다음 주 Schedule + TL 근무표 생성 | |
 | `/plan [from] [to] [account]` | Planner 탭의 새 규칙을 Schedule에 반영 (미리보기 → Apply) | `/plan from:10-01 to:10-31` |
@@ -113,17 +113,21 @@ xlsx 가져오기는 목록 수식(SORT/UNIQUE/FILTER)을 계산하지 못해 Bo
 - AI는 `/log` 자유 입력에만 사용 (Claude API, effort low, JSON 스키마 고정 출력). 이름 매칭은 인덱스가 하므로 프롬프트가 짧음
 - `--min-instances 1` 로 콜드 스타트 없음
 
-**설정** (1회)
-1. https://discord.com/developers/applications → New Application → *Bot* 탭에서 토큰 발급 (명령 등록용)
-2. *General Information* 의 Application ID, Public Key → `env.yaml` 의 `DISCORD_APP_ID`, `DISCORD_PUBLIC_KEY`
-3. *OAuth2 → URL Generator*: scope `applications.commands` + `bot` 체크 → 생성된 URL로 서버에 초대
-4. 배포 후 *Interactions Endpoint URL* = `https://<서비스URL>/discord/interactions` 저장 (디스코드가 서명 검증 테스트함)
-5. 명령 등록: `DISCORD_APP_ID=… DISCORD_BOT_TOKEN=… DISCORD_GUILD_ID=<서버 ID> python tools/register_discord_commands.py`
-6. (권장) 매니저 역할 ID를 `DISCORD_MANAGER_ROLE_IDS` 에 넣어 매니저만 사용
+**화면 흐름 (빠르게 쓰도록)**
+- `/` 입력 → 명령 선택 → 이름 칸에 두세 글자 → 후보에 **그날 시프트가 같이 표시** (`Reno · ADA #1 09:00-17:00`) → 고르면 끝. 날짜 기본값 = 오늘
+- 미리보기·확인 창은 **본인에게만 보임**, 저장 기록은 `#bot-log` 에 한 줄
+- `/schedule` (인자 없음) = 오늘 전체 보드: **플레이어 빈 시프트가 맨 위**, 고객/농장/TL 순
 
-## 매니저 컨펌 경로
-- 디스코드 알림의 confirm 링크 클릭 → 봇이 텔레그램으로 영업자에게 확정 회신
-- 고객 질문(QUESTION)은 알림의 answer 링크 뒤에 `&text=답변내용` 을 붙여 열면 영업자에게 한글로 전달됨
+**텔레그램 → 디스코드 → 시트 (한 번에)**
+1. 영업자가 텔레그램에 평소처럼 요청 → AI가 해석 → 영업자 ✅ → **시트 즉시 반영**
+2. `#sales-requests` 에 카드: 캐릭터 · 요청 영어 번역 · 시트 반영 결과 · 보낸 영업자 + 버튼
+   - **✅ Confirm** (재접속 요청은 **Done**) → 영업자에게 "확정 완료" (한글)
+   - **💬 Reply** → 입력창에 영어로 → 영업자에게 한글 번역으로 전달 (고객 질문은 **Answer** 한 개)
+   - **📋 Schedule** → 그 캐릭터의 7일 스케줄 (본인만 보임)
+   - 처리되면 카드가 회색으로 바뀌고 누가 처리했는지 표시 → 중복 처리 없음
+3. 긴급(재접속) 카드는 `@Manager` 역할 멘션
+
+**설정** — 새 서버: `tools/setup_discord.py` 가 역할(Manager)·채널(`#sales-requests` `#manager-desk` `#bot-log`)·명령·사용법 고정 메시지를 만들고 env.yaml 을 채움. 배포(`deploy.sh`) 때 Interactions Endpoint 자동 등록. 순서는 `WORK_ORDER.md` Phase 4.
 
 ## 용어 사전 (Glossary) & 학습 방법
 `Glossary` 탭: Term / Variants(|구분) / KoreanFull / English / Category / Verified. 봇 시작 시 `data/glossary.csv`로 자동 생성.

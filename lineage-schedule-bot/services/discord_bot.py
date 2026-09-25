@@ -5,11 +5,11 @@
 디스코드는 3초 안에 응답해야 하므로: 조회는 메모리, 시트 쓰기·AI 호출은 응답 후 백그라운드.
 (Cloud Run 은 --no-cpu-throttling 이어야 응답 후 작업이 끊기지 않음 → deploy.sh 참고)
 """
-import os, json, logging
+import os, json, logging, datetime
 import httpx
 from nacl.signing import VerifyKey
 from nacl.exceptions import BadSignatureError
-from services import index, manager, state, sheets
+from services import index, manager, state, sheets, notify, clock
 from services.manager import Draft, TITLES
 
 log = logging.getLogger("discord")
@@ -49,7 +49,7 @@ COMMANDS = [
     {"name": "extend", "description": "Change a shift's time", "options": [
         _o("account", S, "Account/character", True, True), _o("new_time", S, "New time, e.g. 24:00-09:30", True),
         DATE, _o("time", S, "Current shift time"), _o("slot", I, "Shift slot")]},
-    {"name": "schedule", "description": "Show shifts for an account or a staff member", "options": [
+    {"name": "schedule", "description": "Today's board (gaps first), or one account / staff member", "options": [
         _o("account", S, "Account/character", auto=True), _o("staff", S, "Employee", auto=True), DATE]},
     {"name": "log", "description": "Free-text note — AI fills the form, you confirm", "options": [
         _o("text", S, "e.g. Reno 2h OT on Jjuni last night, boss fight", True)]},
@@ -101,6 +101,8 @@ async def handle(p: dict, bg) -> dict:
         return await _command(p, uid, name, bg)
     if t == 3:
         return _component(p, uid, name, bg)
+    if t == 5:
+        return _modal(p, name, bg)
     return _msg("Unsupported interaction.")
 
 
@@ -109,13 +111,34 @@ def _opts(data: dict) -> dict:
 
 
 def _autocomplete(data: dict) -> dict:
-    focused = next((o for o in data.get("options", []) if o.get("focused")), None)
+    """이름 + 그날 시프트를 같이 보여줌 → 매니저가 맞는 사람/계정을 바로 고름. 그날 근무자가 먼저"""
+    opts = {o["name"]: o for o in data.get("options", [])}
+    focused = next((o for o in opts.values() if o.get("focused")), None)
     if not focused:
         return {"type": 8, "data": {"choices": []}}
     snap = index.get()
-    pool = index.account_names(snap) if focused["name"] == "account" else snap.staff
-    names = index.suggest(pool, str(focused.get("value", "")), 25)
-    return {"type": 8, "data": {"choices": [{"name": n[:100], "value": n[:100]} for n in names]}}
+    q = str(focused.get("value", ""))
+    date = manager.parse_date((opts.get("date") or {}).get("value")) or clock.today().isoformat()
+    day = [x for x in snap.shifts if x.date == date]
+    if focused["name"] == "account":
+        working = sorted({x.account for x in day if not x.off}, key=str.lower)
+        pool = working + [a for a in index.account_names(snap) if a not in set(working)]
+        names = index.suggest(pool, q, 25)
+        label = lambda a: a + ("  ·  " + "  ".join(
+            f"#{x.slot} {'OFF' if x.off else x.time[:5] + ' ' + (x.player or '—')}"
+            for x in sorted((x for x in day if x.account == a), key=lambda x: x.slot)) if any(x.account == a for x in day) else "")
+    else:
+        by = {}
+        for x in day:
+            if x.player and not x.off: by.setdefault(x.player, []).append(x)
+        tl = {t.leader: t for t in snap.tl if t.date == date}
+        pool = sorted(set(by) | set(tl), key=str.lower) + [n for n in snap.staff if n not in by and n not in tl]
+        names = index.suggest(pool, q, 25)
+        def label(n):
+            parts = [f"{x.account} #{x.slot} {x.time}" for x in by.get(n, [])]
+            if n in tl: parts.append(f"TL {tl[n].shift}")
+            return n + ("  ·  " + ", ".join(parts) if parts else "")
+    return {"type": 8, "data": {"choices": [{"name": label(n)[:100], "value": n[:100]} for n in names]}}
 
 
 async def _command(p, uid, name, bg) -> dict:
@@ -123,7 +146,9 @@ async def _command(p, uid, name, bg) -> dict:
     if not index.ready():
         index.get(block=True)                                    # 콜드 스타트 첫 요청만 (보통 기동 시 warm)
     if cmd == "schedule":
-        return _msg(_schedule_text(o))
+        out = _schedule_text(o)
+        return _msg(out) if isinstance(out, str) else {"type": 4, "data": {**out, "flags": EPHEMERAL,
+                                                                           "allowed_mentions": {"parse": []}}}
     if cmd == "week":
         bg.add_task(_run_week, p["token"])
         return {"type": 5, "data": {"flags": EPHEMERAL}}
@@ -140,6 +165,8 @@ async def _command(p, uid, name, bg) -> dict:
 
 def _component(p, uid, name, bg) -> dict:
     action, sid = p["data"]["custom_id"].split("|", 1)
+    if action.startswith("req_"):                                # 텔레그램 영업 요청 카드 버튼 (누구나 매니저면 처리)
+        return _request_component(action, sid, name, bg)
     s = state.get(sid)
     if not s:
         return {"type": 7, "data": {"content": "This request expired. Run the command again.", "embeds": [], "components": []}}
@@ -193,7 +220,7 @@ def render(d: Draft, sid: str) -> dict:
     return {"content": "", "embeds": [embed], "components": rows, "allowed_mentions": {"parse": []}}
 
 
-def _schedule_text(o: dict) -> str:
+def _schedule_text(o: dict) -> str | dict:
     date = manager.parse_date(o.get("date"))
     if not date:
         return "Can't read the date."
@@ -211,11 +238,117 @@ def _schedule_text(o: dict) -> str:
         tl = index.tl_on(date, who, snap)
         head = f"**{who}** — {date}" + (f"\nTL shift: {tl[0].shift} ({tl[0].attendance or 'no attendance yet'})" if tl else "")
     else:
-        return "Give an account or a staff name."
+        return _overview(date, snap)
     body = "\n".join(f"• #{s.slot} `{'OFF' if s.off else s.time}` {s.player or '—'}"
                      + (f" @{s.ground}" if s.ground else "") + ("" if o.get("account") else f" ({s.account})")
                      for s in rows)
     return f"{head}\n{body or 'No shifts.'}"
+
+
+def _overview(date: str, snap) -> dict:
+    """/schedule (인자 없음) — 그날 전체를 임베드로 (빈 자리 / 고객 / 농장 / TL). 메시지 총 6000자 제한 안에서"""
+    day = [x for x in snap.shifts if x.date == date]
+    if not day:
+        return {"content": f"No shifts on {date}."}
+    gaps = [x for x in day if not x.off and not x.player]
+    embeds = [{"title": f"📋 {date} — {sum(not x.off for x in day)} shifts · {len(gaps)} without a player",
+               "color": 0xE67E22 if gaps else 0x2ECC71,
+               "description": ("⚠️ " + ", ".join(f"{x.account} #{x.slot} `{x.time}`" for x in gaps)) if gaps else "✅ Every shift has a player"}]
+    for typ, color in (("Client", 0x3498DB), ("Farming", 0x27AE60)):
+        accs = sorted({x.account for x in day if x.type == typ}, key=str.lower)
+        lines = []
+        for a in accs:
+            cells = [f"#{x.slot} " + ("OFF" if x.off else f"{x.time} {x.player or '⚠️'}")
+                     for x in sorted((x for x in day if x.account == a), key=lambda x: x.slot)]
+            lines.append(f"**{a}** " + " · ".join(cells))
+        if lines:
+            embeds.append({"title": typ, "color": color, "description": "\n".join(lines)})
+    tl = [t for t in snap.tl if t.date == date]
+    if tl:
+        embeds.append({"title": "Team leaders", "color": 0x95A5A6,
+                       "description": " · ".join(f"{t.leader} {t.shift}" for t in tl)})
+    budget = 5800                                                  # 임베드 전체 6000자 제한
+    for e in embeds:
+        room = max(0, min(4000, budget - len(e["title"])))
+        if len(e["description"]) > room:
+            e["description"] = e["description"][:max(0, room - 45)] + "\n… /schedule account:<name> for more"
+        budget -= len(e["title"]) + len(e["description"])
+    return {"content": "", "embeds": embeds}
+
+
+# ── 텔레그램 영업 요청 카드 (notify.request_card) ──
+def _request_component(action: str, sid: str, name: str, bg) -> dict:
+    s = state.get(sid)
+    if not s:
+        return _msg("This request expired.")
+    op = s.get("op", {})
+    card = lambda status, open_=True: notify.request_card(sid, op, s.get("en", ""), s.get("sheet_result", ""),
+                                                           s.get("sales_name", ""), status, open_)
+    if action == "req_sched":
+        acc = op.get("character") or ""
+        snap = index.get()
+        start = clock.today()
+        days = []
+        for i in range(7):
+            d = (start + datetime.timedelta(days=i)).isoformat()
+            rows = index.shifts_on(d, acc, snap=snap)
+            if rows:
+                days.append(f"`{d[5:]}` " + " · ".join(f"#{x.slot} {'OFF' if x.off else x.time + ' ' + (x.player or '⚠️')}"
+                                                        for x in rows))
+        return _msg(f"**{acc}** — next 7 days\n" + ("\n".join(days) or "No shifts."))
+    if action == "req_ok":
+        if s.get("status") == "done":
+            return _msg(f"Already handled{' by ' + s['handled_by'] if s.get('handled_by') else ''}.")
+        state.update(sid, status="done", handled_by=name)
+        bg.add_task(_tell_sales, s, "ok", name, "")
+        verb = "Done" if op.get("type") == "RELOGIN" else "Confirmed"
+        return {"type": 7, "data": card(f"✅ {verb} by {name} · {clock.stamp()[11:16]}", open_=False)}
+    if action == "req_reply":
+        q = op.get("question") or ""
+        return {"type": 9, "data": {"custom_id": f"req_modal|{sid}", "title": "Reply to sales (English)",
+                "components": [{"type": 1, "components": [{
+                    "type": 4, "custom_id": "text", "style": 2, "required": True, "max_length": 1000,
+                    "label": ("Answer: " + q)[:45] if q else "Message (sent in Korean)",
+                    "placeholder": "e.g. Abyss gives more EXP after level 60"}]}]}}
+    return _msg("Unknown action.")
+
+
+def _modal(p, name: str, bg) -> dict:
+    cid = p["data"]["custom_id"]
+    action, sid = cid.split("|", 1)
+    if action != "req_modal":
+        return _msg("Unknown form.")
+    s = state.get(sid)
+    if not s:
+        return _msg("This request expired.")
+    text = p["data"]["components"][0]["components"][0]["value"].strip()
+    op = s.get("op", {})
+    question = op.get("type") == "QUESTION"
+    state.update(sid, status="done" if question else s.get("status"), handled_by=name, answer=text)
+    bg.add_task(_tell_sales, s, "reply", name, text)
+    card = notify.request_card(sid, op, s.get("en", ""), s.get("sheet_result", ""), s.get("sales_name", ""),
+                               f"💬 {name}: {text}"[:1000], open_=not question)
+    return {"type": 7, "data": card} if p.get("message") else _msg("Sent to sales.")
+
+
+async def _tell_sales(s: dict, kind: str, manager_name: str, text: str):
+    """매니저 버튼/답장 → 영업자 텔레그램"""
+    from services import telegram as tg, parser, translate
+    chat = s.get("sales_chat_id")
+    if not chat:
+        return
+    op = s.get("op", {})
+    try:
+        if kind == "ok":
+            msg = ("✅ 재접속 처리 완료" if op.get("type") == "RELOGIN" else "✅ 확정 완료") + \
+                  f"\n{parser.summarize_kr(op)}\n(매니저: {manager_name})"
+        else:
+            kr = await translate.en_to_kr(text)
+            head = f"💬 매니저 답변\n질문: {op.get('question')}\n" if op.get("type") == "QUESTION" else "💬 매니저 메시지\n"
+            msg = f"{head}{kr}\n(EN: {text})"
+        await tg.send(chat, msg)
+    except Exception:
+        log.exception("telegram relay failed")
 
 
 # ── 백그라운드 작업 (응답 후) ──────────────────
@@ -238,7 +371,9 @@ async def _run_commit(token: str, sid: str, draft: Draft, manager_name: str):
         summary = manager.commit(draft, manager_name)
         state.update(sid, status="done")
         await _edit(token, {"content": f"✅ Saved: {summary}", "components": []})
-        await _followup(token, f"📝 {summary} · by {manager_name}")        # 채널 공개 기록
+        line = f"📝 {summary} · by {manager_name}"
+        if not await notify.log_line(line):                                  # 기록 채널 없으면 이 채널에 공개 기록
+            await _followup(token, line)
     except Exception as e:
         log.exception("commit failed")
         state.update(sid, status="preview")                                   # 다시 시도 가능
@@ -333,8 +468,10 @@ async def _run_plan_apply(token: str, sid: str, inp: dict, manager_name: str):
         state.update(sid, status="done")
         index.invalidate()
         await _edit(token, {**_plan_embed(plan, inp, None, done=True), "content": "✅ Schedule updated."})
-        await _followup(token, f"🗓️ Plan applied {plan.lo}~{plan.hi}: {plan.updates} updated, {plan.new} new "
-                               f"({', '.join(sorted({r.account for r in plan.rules}))[:1500]}) · by {manager_name}")
+        line = (f"🗓️ Plan applied {plan.lo}~{plan.hi}: {plan.updates} updated, {plan.new} new "
+                f"({', '.join(sorted({r.account for r in plan.rules}))[:1500]}) · by {manager_name}")
+        if not await notify.log_line(line):
+            await _followup(token, line)
     except Exception as e:
         log.exception("plan apply failed")
         state.update(sid, status="preview")

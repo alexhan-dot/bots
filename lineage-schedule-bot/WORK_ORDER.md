@@ -115,26 +115,34 @@ gcloud firestore databases describe --database="(default)" 2>/dev/null || \
 **검증**: Client/Farming/TL Board에 이번 주가 보이고 Payroll 탭에 이번 급여 기간(2026-09-20 ~ 10-03)의 직원별 시간·OT·페널티·인센티브가 집계되는지.
 Board/Payroll A열 목록은 봇 첫 기동(ensure_tabs) 때 동적 수식으로 교체됨 — 배포 후 한 번 더 확인.
 
-## 4. Phase 4 — 외부 키 수집 (사용자에게 하나씩 요청)
+## 4. Phase 4 — 새 텔레그램 봇 · 새 디스코드 서버 (사용자와 하나씩)
 
-값은 사용자가 **env.yaml에 직접 입력**하게 하거나, 채팅으로 받으면 Claude Code가 env.yaml에만 기록. 채팅 로그·커밋에 남기지 않는다.
+값은 사용자가 **env.yaml에 직접 입력**하거나 스크립트가 채움. 채팅 로그·커밋에 남기지 않는다. (`cp env.yaml.example env.yaml` 먼저)
 
+### 4-1. 텔레그램 봇 (새로)
+1. 텔레그램 **@BotFather** → `/newbot` → 표시 이름(예: Lineage Schedule) → 유저네임(`..._bot` 으로 끝) → 토큰 → `TELEGRAM_BOT_TOKEN`
+2. BotFather `/setprivacy` → 봇 선택 → **Disable** (단체방에서도 메시지 읽기)
+3. `TELEGRAM_WEBHOOK_SECRET` = `openssl rand -hex 16` 결과
+4. 대표가 **새 봇에게 `/start`** → 답장에 나오는 Chat ID → `ADMIN_CHAT_ID` *(배포 후에 가능 — 배포 전이면 @userinfobot 으로 확인)*
+5. 영업자들도 새 봇에게 `/start` → 각자 Chat ID → `SALES_CHAT_IDS` (쉼표). 미등록 사람이 메시지를 보내면 봇이 대표에게 Chat ID를 알려줌 → 추가 후 재배포
+
+### 4-2. 디스코드 (새 서버)
+1. 디스코드 앱 → 서버 추가(+) → **직접 만들기** → 이름 (예: Lineage Ops)
+2. https://discord.com/developers/applications → **New Application** (이름 예: Lineage Bot)
+3. 왼쪽 **Bot** → *Reset Token* → 토큰 복사 (한 번만 보임)
+4. 로컬/Cloud Shell: `pip3 install httpx` 후
+   `DISCORD_BOT_TOKEN=<토큰> python3 tools/setup_discord.py` → 출력된 **초대 링크**를 열어 새 서버에 봇 추가
+5. 같은 명령을 한 번 더 실행 → 역할 `Manager`, 채널 `#sales-requests` `#manager-desk` `#bot-log`, 슬래시 명령, 사용법 고정 메시지 생성 + **env.yaml 의 DISCORD_* 자동 기입**
+6. 서버 설정 > 멤버 → 매니저들(본인 포함)에게 **Manager** 역할 부여. 매니저들을 서버에 초대 (서버 이름 우클릭 > 초대하기)
+
+### 4-3. 나머지
 | env 키 | 얻는 방법 |
 |---|---|
 | `ANTHROPIC_API_KEY` | console.anthropic.com > API Keys > Create Key |
-| `TELEGRAM_BOT_TOKEN` | 텔레그램 @BotFather > /newbot > 이름·유저네임(bot으로 끝남) > 토큰. 이어서 /setprivacy > 봇 선택 > Disable |
-| `ADMIN_CHAT_ID` | 대표가 @userinfobot에게 메시지 → 숫자 ID |
-| `SALES_CHAT_IDS` | 영업자 각자 @userinfobot → 쉼표로 나열 (없으면 일단 ADMIN과 동일하게) |
-| `DISCORD_WEBHOOK_URL` | 디스코드 채널 설정 > 연동 > 웹훅 > 새 웹훅 > URL 복사 |
-| `BOT_BASE_URL` | Phase 5 첫 배포 후 채움 |
 | `BOT_TZ` | "오늘" 기준 시간대 (기본 Asia/Seoul) — 사용자에게 확인 |
-| `DISCORD_APP_ID`, `DISCORD_PUBLIC_KEY` | README "디스코드 매니저 봇 > 설정" 1~3 |
-| `DISCORD_MANAGER_ROLE_IDS` | 디스코드 서버 설정 > 역할 > 매니저 역할 우클릭 > ID 복사 (개발자 모드 필요) |
 | `TALKBRIDGE_*` | **비워둠 (보류)** |
 
-대표와 영업자 모두 봇에게 `/start` 한 번 눌러두도록 안내.
-
-**완료 기준**: env.yaml에 위 5개 값 채워짐 (BOT_BASE_URL 제외).
+**완료 기준**: env.yaml에 TELEGRAM_BOT_TOKEN · ADMIN_CHAT_ID · ANTHROPIC_API_KEY · DISCORD_* (스크립트) 채워짐.
 
 ---
 
@@ -144,12 +152,12 @@ Board/Payroll A열 목록은 봇 첫 기동(ensure_tabs) 때 동적 수식으로
 bash deploy.sh            # REGION 환경변수로 리전 변경 가능: REGION=australia-southeast1 bash deploy.sh
 ```
 - 첫 배포 5~8분. 실패 시 로그 읽고 원인 수정 (흔한 원인: API 미활성, SA 권한, Dockerfile ffmpeg 설치 실패)
-- 출력된 서비스 URL을 `env.yaml`의 `BOT_BASE_URL`에 기록 → `bash deploy.sh` 한 번 더
-- `curl $URL/healthz` → `{"ok":true}` 확인
-- `curl "https://api.telegram.org/bot$TOKEN/getWebhookInfo"` → url이 `$URL/telegram/webhook`인지 확인
-- 디스코드 Developer Portal에 Interactions Endpoint URL `$URL/discord/interactions` 저장 (성공해야 저장됨) → `tools/register_discord_commands.py` 실행
+- deploy.sh 가 자동으로: 텔레그램 웹훅·메뉴(/start /week /glossary) 등록, **디스코드 Interactions Endpoint 등록**
+- `curl $URL/healthz` → `{"ok":true}`
+- 대표·영업자가 새 봇에 `/start` → Chat ID 확인 → env.yaml 에 넣고 `bash deploy.sh` 한 번 더 (4-1의 4·5)
+- 디스코드 `#manager-desk` 에서 `/schedule` → 오늘 보드가 뜨면 연결 완료
 
-**완료 기준**: healthz OK, 텔레그램 웹훅 등록 확인.
+**완료 기준**: healthz OK, 텔레그램 `/start` 응답, 디스코드 `/schedule` 응답.
 
 ---
 
@@ -161,12 +169,12 @@ bash deploy.sh            # REGION 환경변수로 리전 변경 가능: REGION=
 2. 대표 → 봇: `/learn 테스트 = 테스트 / test / unknown` → Glossary 탭에 행 추가 확인 → 확인 후 그 행 삭제
 3. 영업자(또는 SALES에 등록된 대표) → 봇: `아덴서버 돌 케릭 상아탑 6층 고정` → 캐릭 후보/신규 버튼 도착
 4. `➕ 신규 캐릭터` 누르면 양식 안내 → 양식대로 전송(구분: 고객/농장 포함) → 컨펌 버튼 → ✅ → Accounts에 행 추가 + Schedule에 이번 주(오늘부터)·다음 주 행 추가 + 해당 Board에 표시 + 디스코드 알림
-5. 디스코드 알림의 Confirm 링크 클릭 → 영업자 텔레그램에 "확정 완료"
+5. `#sales-requests` 카드의 **✅ Confirm** → 영업자 텔레그램에 "확정 완료", 카드 회색으로 바뀜 · **💬 Reply** 로 영어 입력 → 영업자에게 한글 전달
 6. 대표 → 봇: 카톡 스크린샷 1장 → 한/영 초안 + 승인 버튼 → ✅ → 디스코드에 Notice
 7. 영업자 → 봇: `24. 수 9월 23일 : 10:00 ~ 18:00 (8시간) -> 삭제\n추가 목 9월 24일 : 24:00 ~ 08:00(8시간)` → "어느 캐릭터 건인가요?" 버튼 → 선택 → 시트 반영
-8. 영업자 → 봇: `매니저님 버땅보다 버땅심연이 경치 더 주나요?` → QUESTION 분류 → 디스코드 답변 요청 링크 → 링크 뒤 `&text=Abyss gives more EXP` 붙여 열기 → 영업자에게 한글 답변 도착
+8. 영업자 → 봇: `매니저님 버땅보다 버땅심연이 경치 더 주나요?` → QUESTION 분류 → `#sales-requests` 카드 **💬 Answer** → `Abyss gives more EXP` → 영업자에게 한글 답변 도착
 
-9. 매니저(디스코드) → `/schedule account:Alex` → 오늘 시프트 즉시 표시
+9. 매니저(디스코드) → `/schedule` → 오늘 보드(빈 자리 먼저) · `/schedule account:Alex` → 오늘 시프트 즉시 표시
 10. 매니저 → `/ot staff:<오늘 근무자> hours:1 reason:test` → 매칭된 시프트 미리보기 → Confirm → Overtime 탭에 행 + 채널 로그 → 확인 후 행 삭제
 11. 매니저 → `/log <근무자> 1h OT today test` → 같은 미리보기가 뜨는지 (AI) → Cancel
 12. 매니저 → Planner 탭에 테스트 규칙 1줄(다음 주 수요일 하루, 04:00-10:00) → `/plan` → 미리보기에 ⚙️ 점검 4h 표시 → Apply → Schedule 행 Hours = 2, Status "Applied" → 확인 후 행 원복
